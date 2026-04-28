@@ -21,9 +21,12 @@ def main() -> int:
         if sys.platform == "win32":
             ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
                 None,
-                "O EldenSys Agent já está em execução (veja o ícone na bandeja).",
+                (
+                    "O EldenSys Agent já está em execução.\n\n"
+                    "Verifique o ícone na bandeja do sistema (próximo ao relógio)."
+                ),
                 "EldenSys Agent",
-                0x40,  # MB_ICONINFORMATION
+                0x40 | 0x10000,  # MB_ICONINFORMATION | MB_SETFOREGROUND
             )
         return 0
 

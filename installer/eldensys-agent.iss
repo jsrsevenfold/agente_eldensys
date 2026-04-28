@@ -13,7 +13,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\EldenSysAgent
+DefaultDirName={localappdata}\Programs\EldenSysAgent
 DefaultGroupName=EldenSys
 DisableProgramGroupPage=yes
 OutputDir=..\dist\installer
@@ -21,7 +21,8 @@ OutputBaseFilename=EldenSysAgent-Setup-{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesInstallIn64BitMode=x64
 SetupIconFile=..\assets\icon.ico
@@ -37,9 +38,9 @@ Name: "autostart"; Description: "Iniciar automaticamente com o Windows (recomend
 Source: "..\dist\EldenSysAgent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{userprograms}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 ; Auto-start: registra em HKCU\Run para o usuário que instalou.
 ; Usamos {userappdata} via Run key — funciona sem precisar de admin no boot.

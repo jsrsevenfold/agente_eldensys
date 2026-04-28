@@ -30,12 +30,19 @@ DEFAULT_ALLOWED_ORIGINS = [
     "https://eldensys.up.railway.app",
 ]
 
+# Regex que casa qualquer subdomínio dos domínios oficiais (multi-tenant).
+# Ex.: https://cliente1.eldensys.com.br, https://acme.eldensys.up.railway.app
+DEFAULT_ALLOWED_ORIGIN_REGEX = (
+    r"^https://([a-zA-Z0-9-]+\.)*(eldensys\.com\.br|eldensys\.up\.railway\.app)$"
+)
+
 
 @dataclass
 class AgentConfig:
     host: str = "127.0.0.1"
     port: int = 17777
     allowed_origins: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_ORIGINS))
+    allowed_origin_regex: str = DEFAULT_ALLOWED_ORIGIN_REGEX
     log_level: str = "INFO"
     sumatra_path: str = ""  # auto-detected if empty
 

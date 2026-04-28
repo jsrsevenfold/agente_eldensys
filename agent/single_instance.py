@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import sys
 
-_MUTEX_NAME = "Global\\EldenSysAgent_SingleInstance_v1"
+# `Local\` mantém o mutex no escopo da sessão do usuário logado (não exige
+# privilégio SeCreateGlobalPrivilege, ao contrário de `Global\`). Como o
+# agente roda sempre no contexto interativo do usuário, isso basta.
+_MUTEX_NAME = "Local\\EldenSysAgent_SingleInstance_v1"
 
 
 class SingleInstance:
@@ -14,20 +17,17 @@ class SingleInstance:
         if sys.platform != "win32":
             return
         try:
+            import win32api  # type: ignore
             import win32event  # type: ignore
             import winerror  # type: ignore
 
             self.handle = win32event.CreateMutex(None, False, _MUTEX_NAME)
-            last_error = win32event.GetLastError() if hasattr(win32event, "GetLastError") else 0
-            # CreateMutex itself doesn't expose last_error directly via win32event;
-            # the safer path is to inspect via win32api.
-            import win32api  # type: ignore
-
             err = win32api.GetLastError()
             if err == winerror.ERROR_ALREADY_EXISTS:
                 self.already_running = True
         except Exception:
-            self.already_running = False
+            # Em último caso, fallback: tenta detectar pelo socket da porta.
+            self.already_running = _port_in_use(17777)
 
     def release(self) -> None:
         if self.handle is None:
@@ -39,3 +39,15 @@ class SingleInstance:
         except Exception:
             pass
         self.handle = None
+
+
+def _port_in_use(port: int) -> bool:
+    """Fallback: detecta se a porta do agente já está ocupada."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    except Exception:
+        return False

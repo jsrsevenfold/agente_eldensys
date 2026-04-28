@@ -99,17 +99,7 @@ class AgentTray:
         self.start_server()
 
         menu = pystray.Menu(
-            pystray.MenuItem(
-                f"EldenSys Agent  •  porta {self.cfg.port}",
-                self._open_url,
-                default=True,
-            ),
-            pystray.MenuItem("Abrir health check no navegador", self._open_url),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Abrir pasta de logs", self._open_logs),
-            pystray.MenuItem("Editar config.json", self._open_config),
             pystray.MenuItem("Abrir pasta do agente", self._open_appdir),
-            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Sair", self._quit),
         )
 
