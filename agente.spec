@@ -3,12 +3,15 @@
 
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
 ROOT = Path(os.getcwd())
 
 datas = []
+# Bundle escpos package data (capabilities.json, etc.)
+datas += collect_data_files('escpos')
 # Bundle assets and SumatraPDF if present
 if (ROOT / "assets").exists():
     datas.append((str(ROOT / "assets"), "assets"))
@@ -27,7 +30,7 @@ hiddenimports = [
 ]
 
 a = Analysis(
-    ["agent/__main__.py"],
+    ["run_agent.py"],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
