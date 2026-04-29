@@ -2,7 +2,7 @@
 ; Compile with Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
 
 #define MyAppName "EldenSys Agent"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #define MyAppPublisher "EldenSys"
 #define MyAppURL "https://eldensys.com.br"
 #define MyAppExeName "EldenSysAgent.exe"

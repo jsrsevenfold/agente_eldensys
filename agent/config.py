@@ -20,15 +20,7 @@ LOG_DIR = APP_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 CONFIG_PATH = APP_DIR / "config.json"
 
-DEFAULT_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    # Production (ajuste conforme seu domínio Railway/custom):
-    "https://eldensys.com.br",
-    "https://app.eldensys.com.br",
-    "https://eldensys.up.railway.app",
-]
+DEFAULT_ALLOWED_ORIGINS = ["*"]
 
 # Regex que casa qualquer subdomínio dos domínios oficiais (multi-tenant).
 # Ex.: https://cliente1.eldensys.com.br, https://acme.eldensys.up.railway.app
@@ -58,6 +50,11 @@ def load_config() -> AgentConfig:
         for k, v in data.items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
+        # Auto-migração: garante "*" em allowed_origins (loopback só, sem risco
+        # de CORS). Resolve configs antigas que não cobrem o domínio do tenant.
+        if "*" not in cfg.allowed_origins:
+            cfg.allowed_origins = ["*"]
+            save_config(cfg)
         return cfg
     except (json.JSONDecodeError, OSError):
         return AgentConfig()
