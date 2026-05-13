@@ -30,6 +30,11 @@ class ConfigUpdate(BaseModel):
     escpos_default_height: int | None = Field(default=None, ge=1, le=8)
     escpos_default_font: Literal["a", "b"] | None = None
     escpos_size_multiplier: float | None = Field(default=None, ge=0.5, le=4.0)
+    escpos_default_bold: bool | None = None
+    escpos_left_margin_mm: float | None = Field(default=None, ge=0, le=30)
+    escpos_right_margin_mm: float | None = Field(default=None, ge=0, le=30)
+    escpos_top_margin_mm: float | None = Field(default=None, ge=0, le=30)
+    escpos_bottom_margin_mm: float | None = Field(default=None, ge=0, le=30)
     # PDF defaults
     pdf_fit_mode: Literal["fit", "noscale", "shrink"] | None = None
     pdf_scale: float | None = Field(default=None, ge=0.5, le=3.0)
@@ -144,6 +149,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "escpos_default_height": c.escpos_default_height,
             "escpos_default_font": c.escpos_default_font,
             "escpos_size_multiplier": c.escpos_size_multiplier,
+            "escpos_default_bold": c.escpos_default_bold,
+            "escpos_left_margin_mm": c.escpos_left_margin_mm,
+            "escpos_right_margin_mm": c.escpos_right_margin_mm,
+            "escpos_top_margin_mm": c.escpos_top_margin_mm,
+            "escpos_bottom_margin_mm": c.escpos_bottom_margin_mm,
             "pdf_fit_mode": c.pdf_fit_mode,
             "pdf_scale": c.pdf_scale,
             "pdf_margin_top_mm": c.pdf_margin_top_mm,
@@ -171,6 +181,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "escpos_default_height",
             "escpos_default_font",
             "escpos_size_multiplier",
+            "escpos_default_bold",
+            "escpos_left_margin_mm",
+            "escpos_right_margin_mm",
+            "escpos_top_margin_mm",
+            "escpos_bottom_margin_mm",
             "pdf_fit_mode",
             "pdf_scale",
             "pdf_margin_top_mm",

@@ -137,11 +137,16 @@ Arquivo: `%APPDATA%\EldenSysAgent\config.json`
 }
 ```
 
-Para abrir o arquivo: clique no ícone do agente na bandeja →
-**"Editar config.json (fonte/margens)"**. As mudanças nas seções
-`escpos_*` e `pdf_*` entram em vigor na próxima impressão (sem
-reiniciar o agente). Já mudanças em `allowed_origins`, `log_level`
-ou `sumatra_path` exigem reiniciar.
+**Forma recomendada**: clique duplo no ícone da bandeja (ou clique
+direito → **"Configurações de impressão..."**) — abre uma janela com
+abas (Cupom Térmico / Folha A4 / Avançado) onde você ajusta tudo
+sem editar JSON.
+
+Para edição manual: clique direito → **"Editar config.json (avançado)"**.
+
+As mudanças nas seções `escpos_*` e `pdf_*` entram em vigor na
+próxima impressão (sem reiniciar o agente). Já mudanças em
+`allowed_origins`, `log_level` ou `sumatra_path` exigem reiniciar.
 
 ### Tamanho da fonte e qualidade
 

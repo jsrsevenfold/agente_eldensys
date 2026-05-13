@@ -27,6 +27,9 @@ hiddenimports = [
     "PIL.Image",
     "PIL.ImageDraw",
     "escpos.printer",
+    "tkinter",
+    "tkinter.ttk",
+    "tkinter.messagebox",
 ]
 
 a = Analysis(
@@ -38,7 +41,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "scipy", "numpy.testing"],
+    excludes=["matplotlib", "scipy", "numpy.testing"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

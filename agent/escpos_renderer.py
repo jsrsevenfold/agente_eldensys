@@ -62,13 +62,85 @@ def _effective_size(cmd_value: int | None, default: int, mult: float) -> int:
     return _clamp_size(round(base * mult))
 
 
+def _mm_to_units(mm: float) -> int:
+    """Converte mm pra unidades de movimento ESC/POS (1/180 polegada)."""
+    return max(0, min(65535, round(mm / 25.4 * 180)))
+
+
+def _emit_left_margin(p: Any, mm: float) -> None:
+    """GS L nL nH — define margem esquerda."""
+    if mm <= 0:
+        return
+    units = _mm_to_units(mm)
+    try:
+        p._raw(bytes([0x1D, 0x4C, units & 0xFF, (units >> 8) & 0xFF]))
+    except Exception:
+        pass
+
+
+def _emit_print_area_width(
+    p: Any, profile: Profile, left_mm: float, right_mm: float
+) -> None:
+    """GS W nL nH — define largura da área de impressão (subtrai margem direita).
+
+    Largura útil = perfil_mm - left_mm - right_mm, em unidades de 1/180 pol.
+    """
+    if right_mm <= 0:
+        return
+    profile_mm = 58.0 if profile == "58mm" else 80.0
+    width_mm = max(10.0, profile_mm - left_mm - right_mm)
+    units = _mm_to_units(width_mm)
+    try:
+        p._raw(bytes([0x1D, 0x57, units & 0xFF, (units >> 8) & 0xFF]))
+    except Exception:
+        pass
+
+
+def _emit_feed_mm(p: Any, mm: float) -> None:
+    """ESC J n — avança o papel em n × (1/180 pol). Limite n=255 (≈ 36mm por chamada)."""
+    if mm <= 0:
+        return
+    units = _mm_to_units(mm)
+    try:
+        while units > 0:
+            chunk = min(255, units)
+            p._raw(bytes([0x1B, 0x4A, chunk]))
+            units -= chunk
+    except Exception:
+        pass
+
+
 def render(payload: EscposPayload, cfg: AgentConfig | None = None) -> None:
     """Render commands directly to the Windows printer queue."""
     cfg = cfg or load_config()
     p = Win32Raw(payload.printer)
     try:
+        # Margens horizontais (esquerda e direita)
+        _emit_left_margin(p, cfg.escpos_left_margin_mm or 0.0)
+        _emit_print_area_width(
+            p,
+            payload.profile,
+            cfg.escpos_left_margin_mm or 0.0,
+            cfg.escpos_right_margin_mm or 0.0,
+        )
+        # Margem superior
+        _emit_feed_mm(p, cfg.escpos_top_margin_mm or 0.0)
+
+        # Margem inferior: emitida antes do primeiro cut.
+        bottom_mm = cfg.escpos_bottom_margin_mm or 0.0
+        bottom_emitted = False
         for cmd in payload.commands:
+            if (
+                bottom_mm > 0
+                and not bottom_emitted
+                and cmd.type.lower() == "cut"
+            ):
+                _emit_feed_mm(p, bottom_mm)
+                bottom_emitted = True
             _apply(p, cmd, payload.profile, cfg)
+        # Sem cut no payload → emite no final mesmo assim.
+        if bottom_mm > 0 and not bottom_emitted:
+            _emit_feed_mm(p, bottom_mm)
     finally:
         try:
             p.close()
@@ -86,8 +158,8 @@ def _apply(p: Any, cmd: EscposCommand, profile: Profile, cfg: AgentConfig) -> No
         kwargs: dict[str, Any] = {}
         if cmd.align:
             kwargs["align"] = cmd.align
-        if cmd.bold is not None:
-            kwargs["bold"] = cmd.bold
+        # Bold: comando tem prioridade; senão usa default da config.
+        kwargs["bold"] = cmd.bold if cmd.bold is not None else bool(cfg.escpos_default_bold)
         if cmd.underline is not None:
             kwargs["underline"] = cmd.underline
         kwargs["width"] = _effective_size(cmd.width, default_w, mult)
@@ -98,7 +170,7 @@ def _apply(p: Any, cmd: EscposCommand, profile: Profile, cfg: AgentConfig) -> No
         # reset to defaults after styled lines (respeitando config)
         p.set(
             align="left",
-            bold=False,
+            bold=bool(cfg.escpos_default_bold),
             underline=0,
             width=_clamp_size(round(default_w * mult)),
             height=_clamp_size(round(default_h * mult)),

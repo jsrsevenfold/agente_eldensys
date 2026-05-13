@@ -14,6 +14,7 @@ import uvicorn
 from PIL import Image, ImageDraw
 
 from .config import APP_DIR, CONFIG_PATH, LOG_DIR, load_config
+from .config_window import open_config_window_async
 from .server import create_app
 
 log = logging.getLogger("eldensys.agent.tray")
@@ -85,6 +86,9 @@ class AgentTray:
     def _open_config(self, _icon=None, _item=None) -> None:
         os.startfile(str(CONFIG_PATH))  # type: ignore[attr-defined]
 
+    def _open_config_window(self, _icon=None, _item=None) -> None:
+        open_config_window_async()
+
     def _open_appdir(self, _icon=None, _item=None) -> None:
         os.startfile(str(APP_DIR))  # type: ignore[attr-defined]
 
@@ -99,10 +103,16 @@ class AgentTray:
         self.start_server()
 
         menu = pystray.Menu(
+            pystray.MenuItem(
+                "Configurações de impressão...",
+                self._open_config_window,
+                default=True,
+            ),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Abrir pasta do agente", self._open_appdir),
-            pystray.MenuItem("Editar config.json (fonte/margens)", self._open_config),
             pystray.MenuItem("Abrir pasta de logs", self._open_logs),
             pystray.MenuItem("Verificar agente (/health)", self._open_url),
+            pystray.MenuItem("Editar config.json (avançado)", self._open_config),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Sair", self._quit),
         )

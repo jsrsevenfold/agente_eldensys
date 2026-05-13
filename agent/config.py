@@ -47,6 +47,18 @@ class AgentConfig:
     # Multiplicadores aplicados POR CIMA do width/height vindo do comando.
     # Ex.: comando manda width=1, multiplier=2 → imprime com width=2.
     escpos_size_multiplier: float = 1.0
+    # Negrito padrão para todo texto (deixa a impressão mais escura/visível).
+    # Quando True, qualquer texto que não especifica bold sai em negrito.
+    escpos_default_bold: bool = False
+    # Margens do cupom térmico em mm. Aplicadas via comandos ESC/POS nativos:
+    # - left:   GS L (set left margin)
+    # - right:  GS W (set print area width) calculada a partir do perfil
+    # - top:    ESC J (feed paper) no início
+    # - bottom: ESC J (feed paper) antes do cut (ou no final, se não houver cut)
+    escpos_left_margin_mm: float = 0.0
+    escpos_right_margin_mm: float = 0.0
+    escpos_top_margin_mm: float = 0.0
+    escpos_bottom_margin_mm: float = 0.0
 
     # ── PDF print options (aplicados em /print/pdf) ──
     # Modo de ajuste do SumatraPDF: "fit", "noscale" ou "shrink".
@@ -78,8 +90,17 @@ def load_config() -> AgentConfig:
                 setattr(cfg, k, v)
         # Auto-migração: garante "*" em allowed_origins (loopback só, sem risco
         # de CORS). Resolve configs antigas que não cobrem o domínio do tenant.
+        needs_save = False
         if "*" not in cfg.allowed_origins:
             cfg.allowed_origins = ["*"]
+            needs_save = True
+        # Auto-migração: regrava o arquivo se faltar qualquer campo novo
+        # (ex.: usuário atualizou o agente e o JSON antigo não tinha pdf_scale,
+        # escpos_default_width, margens etc.).
+        expected_keys = set(asdict(AgentConfig()).keys())
+        if not expected_keys.issubset(data.keys()):
+            needs_save = True
+        if needs_save:
             save_config(cfg)
         return cfg
     except (json.JSONDecodeError, OSError):
