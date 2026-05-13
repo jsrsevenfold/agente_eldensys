@@ -127,8 +127,12 @@ class ConfigWindow:
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-        notebook.add(self._build_thermal_tab(notebook), text="Cupom Térmico")
-        notebook.add(self._build_a4_tab(notebook), text="Folha A4 / Recibos")
+        # "Recibos (PDF)" agora é a aba principal — afeta todos os cupons
+        # do sistema atual (venda, delivery, cozinha, NFC-e, comanda).
+        # "ESC/POS (legado)" só serve pra integrações antigas que ainda
+        # mandam comandos ESC/POS direto pra impressora.
+        notebook.add(self._build_a4_tab(notebook), text="Recibos (PDF)")
+        notebook.add(self._build_thermal_tab(notebook), text="ESC/POS (legado)")
         notebook.add(self._build_advanced_tab(notebook), text="Avançado")
 
         btns = ttk.Frame(self.root)
@@ -147,10 +151,12 @@ class ConfigWindow:
 
         ttk.Label(
             f,
-            text="Ajuste para impressoras térmicas (cupom, comanda).\n"
-            "Aumente os valores se a impressão sai pequena ou clara demais.",
+            text="⚠ Estas opções SÓ valem pra integrações que mandam\n"
+            "comandos ESC/POS direto (endpoint /print/escpos).\n"
+            "Os cupons do EldenSys atual usam PDF — ajuste na aba\n"
+            '"Recibos (PDF)".',
             justify="left",
-            foreground="#555",
+            foreground="#a00",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
         self._spin(
@@ -282,7 +288,7 @@ class ConfigWindow:
 
         return f
 
-    # ── Aba: Folha A4 ─────────────────────────────────
+    # ── Aba: Recibos (PDF) ────────────────────────────
     def _build_a4_tab(self, parent: ttk.Notebook) -> ttk.Frame:
         f = ttk.Frame(parent, padding=14)
         f.columnconfigure(0, weight=1)
@@ -290,13 +296,36 @@ class ConfigWindow:
 
         ttk.Label(
             f,
-            text="Ajuste para impressões em folha (NFC-e, DANFE, recibos, comandas\n"
-            "geradas como PDF). Aumente o zoom se a letra está pequena.",
+            text="Ajustes aplicados a TODOS os cupons impressos como PDF:\n"
+            "venda, delivery, cozinha, NFC-e, comanda, recibos.",
             justify="left",
             foreground="#555",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
-        ttk.Label(f, text="Como ajustar ao papel").grid(row=1, column=0, sticky="w", pady=4)
+        # ── Correção de corte na direita (o problema mais comum) ──
+        ttk.Label(
+            f,
+            text="Corrigir corte na borda direita",
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        self._float_spin(
+            f,
+            "Mover impressão pra esquerda (mm)",
+            "pdf_thermal_shift_left_mm",
+            0,
+            20,
+            0.5,
+            row=2,
+            hint="Se palavras estão sendo cortadas na borda direita,\n"
+            "aumente este valor (tipicamente 3-8mm) até parar de cortar.\n"
+            "Não muda o tamanho do papel — só desloca o conteúdo.",
+        )
+
+        ttk.Separator(f, orient="horizontal").grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=10
+        )
+
+        ttk.Label(f, text="Como ajustar ao papel").grid(row=5, column=0, sticky="w", pady=4)
         fit_label_var = tk.StringVar(
             value=FIT_LABELS_REVERSE.get(self.cfg.pdf_fit_mode, "Ajustar ao papel (recomendado)")
         )
@@ -307,7 +336,7 @@ class ConfigWindow:
             values=list(FIT_LABELS.keys()),
             state="readonly",
             width=32,
-        ).grid(row=1, column=1, sticky="e")
+        ).grid(row=5, column=1, sticky="e")
 
         self._float_spin(
             f,
@@ -316,28 +345,29 @@ class ConfigWindow:
             0.5,
             3.0,
             0.05,
-            row=2,
+            row=6,
             hint="1.0 = original; 1.2 = aumenta 20%; 1.5 = aumenta 50%.",
         )
 
         ttk.Separator(f, orient="horizontal").grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=12
+            row=8, column=0, columnspan=2, sticky="ew", pady=12
         )
         ttk.Label(
             f, text="Margens em milímetros (mm)", font=("Segoe UI", 9, "bold")
-        ).grid(row=5, column=0, columnspan=2, sticky="w")
+        ).grid(row=9, column=0, columnspan=2, sticky="w")
         ttk.Label(
             f,
-            text="Adiciona espaço em branco nas bordas. Útil quando o conteúdo\n"
-            "está colado em um dos lados.",
+            text="Adiciona espaço em branco nas bordas (em ambos os lados\n"
+            "do cupom). Não confunda com 'Mover impressão pra esquerda'\n"
+            "acima — aquele corrige corte da térmica sem encolher o cupom.",
             foreground="#888",
             justify="left",
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-        self._float_spin(f, "Margem de cima (mm)", "pdf_margin_top_mm", 0, 50, 0.5, row=7)
-        self._float_spin(f, "Margem da direita (mm)", "pdf_margin_right_mm", 0, 50, 0.5, row=8)
-        self._float_spin(f, "Margem de baixo (mm)", "pdf_margin_bottom_mm", 0, 50, 0.5, row=9)
-        self._float_spin(f, "Margem da esquerda (mm)", "pdf_margin_left_mm", 0, 50, 0.5, row=10)
+        self._float_spin(f, "Margem de cima (mm)", "pdf_margin_top_mm", 0, 50, 0.5, row=11)
+        self._float_spin(f, "Margem da direita (mm)", "pdf_margin_right_mm", 0, 50, 0.5, row=12)
+        self._float_spin(f, "Margem de baixo (mm)", "pdf_margin_bottom_mm", 0, 50, 0.5, row=13)
+        self._float_spin(f, "Margem da esquerda (mm)", "pdf_margin_left_mm", 0, 50, 0.5, row=14)
 
         return f
 

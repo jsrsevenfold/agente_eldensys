@@ -75,6 +75,12 @@ class AgentConfig:
     pdf_margin_right_mm: float = 0.0
     pdf_margin_bottom_mm: float = 0.0
     pdf_margin_left_mm: float = 0.0
+    # Desloca o conteúdo do PDF horizontalmente sem mudar o tamanho da
+    # página. Útil pra térmicas que cortam letras na borda direita:
+    # aumente este valor (3-10mm) que o conteúdo "anda" pra esquerda
+    # e sai inteiro. Diferente de pdf_margin_left/right (que mudam a
+    # mediabox), este só translada o que vai pro papel.
+    pdf_thermal_shift_left_mm: float = 0.0
 
 
 def load_config() -> AgentConfig:

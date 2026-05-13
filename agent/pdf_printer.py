@@ -57,6 +57,7 @@ def _needs_transform(cfg: AgentConfig) -> bool:
         or cfg.pdf_margin_right_mm > 0
         or cfg.pdf_margin_bottom_mm > 0
         or cfg.pdf_margin_left_mm > 0
+        or cfg.pdf_thermal_shift_left_mm > 0
     )
 
 
@@ -81,6 +82,7 @@ def _transform_pdf(pdf_bytes: bytes, cfg: AgentConfig) -> bytes:
     m_right = cfg.pdf_margin_right_mm * MM_TO_PT
     m_bottom = cfg.pdf_margin_bottom_mm * MM_TO_PT
     m_left = cfg.pdf_margin_left_mm * MM_TO_PT
+    shift_left = cfg.pdf_thermal_shift_left_mm * MM_TO_PT
 
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
@@ -91,8 +93,12 @@ def _transform_pdf(pdf_bytes: bytes, cfg: AgentConfig) -> bytes:
             new_w = orig_w * scale + m_left + m_right
             new_h = orig_h * scale + m_top + m_bottom
 
+            # Aplica escala + offset das margens; subtrai shift_left pra
+            # "andar" todo o conteúdo pra esquerda (sem mudar a mediabox).
             page.add_transformation(
-                Transformation().scale(scale, scale).translate(m_left, m_bottom)
+                Transformation()
+                .scale(scale, scale)
+                .translate(m_left - shift_left, m_bottom)
             )
             rect = RectangleObject((0, 0, new_w, new_h))
             page.mediabox = rect

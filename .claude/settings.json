@@ -7,7 +7,10 @@
       "Bash(awk 'NR>=87 && NR<=260 && /^`$|^const |^export |^function |^\\\\/\\\\/|^interface/' src/components/NfceReceipt.tsx)",
       "Bash(awk 'NR>=87 && /^`$/ {print NR; exit}' src/components/NfceReceipt.tsx)",
       "PowerShell($ErrorActionPreference='Stop'; cd 'C:\\\\DEV\\\\EldenSys\\\\frontend'; & powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\strip-css.ps1; Remove-Item .\\\\strip-css.ps1)",
-      "Bash(awk 'NR==259 || NR==260 || NR==261' src/components/NfceReceipt.tsx)"
+      "Bash(awk 'NR==259 || NR==260 || NR==261' src/components/NfceReceipt.tsx)",
+      "PowerShell($path='C:\\\\DEV\\\\EldenSys\\\\frontend\\\\src\\\\utils\\\\thermalPdf.ts'; $b=[IO.File]::ReadAllBytes\\($path\\); $t=[Text.Encoding]::UTF8.GetString\\($b\\); $t=$t.Replace\\('this.widthMm / 2','this.contentCenterX'\\); $t=$t.Replace\\('this.widthMm - this.marginXMm','this.widthMm - this.marginRightMm'\\); [IO.File]::WriteAllBytes\\($path,[Text.Encoding]::UTF8.GetBytes\\($t\\)\\); 'done')",
+      "Bash(python -c \"from agent.config import load_config, AgentConfig; cfg = AgentConfig\\(\\); print\\('default shift:', cfg.pdf_thermal_shift_left_mm\\); from agent.pdf_printer import _needs_transform; cfg.pdf_thermal_shift_left_mm = 5.0; print\\('needs_transform with shift=5:', _needs_transform\\(cfg\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('agent/config_window.py', encoding='utf-8'\\).read\\(\\)\\); print\\('config_window.py: syntax OK'\\)\")"
     ],
     "additionalDirectories": [
       "C:\\DEV\\EldenSys\\frontend"
