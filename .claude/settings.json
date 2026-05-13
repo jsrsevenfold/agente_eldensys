@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xxd)",
+      "Bash(grep -n \"LEGACY_BODY_TO_DELETE\\\\|^    </div>$\\\\|^    </div>\\\\r$\\\\|Tributos totais incidentes \\(Lei Federal 12.741/2012\\) \" src/components/NfceReceipt.tsx)",
+      "PowerShell($ErrorActionPreference = 'Stop'; cd 'C:\\\\DEV\\\\EldenSys\\\\frontend'; & powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\strip-legacy.ps1; Remove-Item .\\\\strip-legacy.ps1)",
+      "Bash(awk 'NR>=87 && NR<=260 && /^`$|^const |^export |^function |^\\\\/\\\\/|^interface/' src/components/NfceReceipt.tsx)",
+      "Bash(awk 'NR>=87 && /^`$/ {print NR; exit}' src/components/NfceReceipt.tsx)",
+      "PowerShell($ErrorActionPreference='Stop'; cd 'C:\\\\DEV\\\\EldenSys\\\\frontend'; & powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\strip-css.ps1; Remove-Item .\\\\strip-css.ps1)",
+      "Bash(awk 'NR==259 || NR==260 || NR==261' src/components/NfceReceipt.tsx)"
+    ],
+    "additionalDirectories": [
+      "C:\\DEV\\EldenSys\\frontend"
+    ]
+  }
+}
