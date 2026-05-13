@@ -73,7 +73,7 @@ curl http://localhost:17777/printers
 | GET    | /health          | Status + versão                           |
 | GET    | /printers        | Lista impressoras Windows + default       |
 | GET    | /config          | Lê configuração atual                     |
-| POST   | /config          | Atualiza CORS / log level / sumatra path  |
+| POST   | /config          | Atualiza CORS / log / sumatra / fonte / escala / margens |
 | POST   | /print/escpos    | Imprime via DSL ESC/POS                   |
 | POST   | /print/raw       | Envia bytes brutos para a fila            |
 | POST   | /print/pdf       | Imprime PDF (base64) via SumatraPDF       |
@@ -119,14 +119,65 @@ Arquivo: `%APPDATA%\EldenSysAgent\config.json`
 {
   "host": "127.0.0.1",
   "port": 17777,
-  "allowed_origins": [
-    "https://app.eldensys.com.br",
-    "http://localhost:5173"
-  ],
+  "allowed_origins": ["*"],
   "log_level": "INFO",
-  "sumatra_path": ""
+  "sumatra_path": "",
+
+  "escpos_default_width": 1,
+  "escpos_default_height": 1,
+  "escpos_default_font": "a",
+  "escpos_size_multiplier": 1.0,
+
+  "pdf_fit_mode": "fit",
+  "pdf_scale": 1.0,
+  "pdf_margin_top_mm": 0.0,
+  "pdf_margin_right_mm": 0.0,
+  "pdf_margin_bottom_mm": 0.0,
+  "pdf_margin_left_mm": 0.0
 }
 ```
+
+Para abrir o arquivo: clique no ícone do agente na bandeja →
+**"Editar config.json (fonte/margens)"**. As mudanças nas seções
+`escpos_*` e `pdf_*` entram em vigor na próxima impressão (sem
+reiniciar o agente). Já mudanças em `allowed_origins`, `log_level`
+ou `sumatra_path` exigem reiniciar.
+
+### Tamanho da fonte e qualidade
+
+**Cupom térmico ESC/POS** (rota `/print/escpos`):
+
+| Campo                      | O que faz                                                              |
+|----------------------------|------------------------------------------------------------------------|
+| `escpos_default_width`     | Largura padrão do texto (1-8). Vale quando o comando não especifica.   |
+| `escpos_default_height`    | Altura padrão do texto (1-8). Idem.                                    |
+| `escpos_default_font`      | `"a"` (12x24, padrão) ou `"b"` (9x17, menor). Idem.                    |
+| `escpos_size_multiplier`   | Multiplicador global (0.5-4.0). Aplica POR CIMA do width/height vindo  |
+|                            | do comando. Útil pra deixar TODAS as impressões maiores numa máquina   |
+|                            | específica sem mexer no frontend. Ex.: `2.0` dobra tudo.               |
+
+**PDF** (rota `/print/pdf` — NFC-e, DANFE, recibos A4, comandas HTML):
+
+| Campo                  | O que faz                                                                  |
+|------------------------|----------------------------------------------------------------------------|
+| `pdf_fit_mode`         | Modo do SumatraPDF: `"fit"` (escala pra caber, default), `"noscale"` (1:1, |
+|                        | pode cortar) ou `"shrink"` (só reduz se passar do papel).                  |
+| `pdf_scale`            | Escala do conteúdo (0.5-3.0). `1.2` aumenta 20%. Em A4 funciona bem; em    |
+|                        | térmica pode cortar o lado direito — combine com `noscale`.                |
+| `pdf_margin_left_mm`   | Margem esquerda extra em mm. Empurra o conteúdo pra direita.               |
+| `pdf_margin_right_mm`  | Margem direita extra em mm (apenas amplia a página, não corta).            |
+| `pdf_margin_top_mm`    | Margem superior extra em mm.                                               |
+| `pdf_margin_bottom_mm` | Margem inferior extra em mm.                                               |
+
+> **Dica de visibilidade pra térmica 80mm**:
+> 1. Prefira `/print/escpos` em vez de PDF rasterizado quando possível —
+>    o ESC/POS imprime em texto nativo (mais nítido) e respeita
+>    `escpos_size_multiplier`.
+> 2. Para PDFs vindos do frontend (comanda HTML), aumente `pdf_scale` para
+>    `1.2`-`1.5` e mantenha `pdf_fit_mode: "fit"` — a página fica maior, o
+>    SumatraPDF ajusta pra largura da bobina, e o texto sai maior.
+> 3. Se aparecer corte na direita, reduza `pdf_margin_left_mm` (ou suba o
+>    `pdf_scale` aos poucos).
 
 > **Importante**: ajuste `allowed_origins` com o domínio de produção real
 > do seu EldenSys antes de empacotar o instalador. Origens não listadas

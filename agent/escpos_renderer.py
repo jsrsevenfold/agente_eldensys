@@ -10,6 +10,8 @@ from escpos.printer import Win32Raw  # type: ignore
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from .config import AgentConfig, load_config
+
 Profile = Literal["58mm", "80mm"]
 
 
@@ -51,12 +53,22 @@ def _profile_width(profile: Profile) -> int:
     return 32 if profile == "58mm" else 48
 
 
-def render(payload: EscposPayload) -> None:
+def _clamp_size(v: int) -> int:
+    return max(1, min(8, int(v)))
+
+
+def _effective_size(cmd_value: int | None, default: int, mult: float) -> int:
+    base = cmd_value if cmd_value is not None else default
+    return _clamp_size(round(base * mult))
+
+
+def render(payload: EscposPayload, cfg: AgentConfig | None = None) -> None:
     """Render commands directly to the Windows printer queue."""
+    cfg = cfg or load_config()
     p = Win32Raw(payload.printer)
     try:
         for cmd in payload.commands:
-            _apply(p, cmd, payload.profile)
+            _apply(p, cmd, payload.profile, cfg)
     finally:
         try:
             p.close()
@@ -64,8 +76,12 @@ def render(payload: EscposPayload) -> None:
             pass
 
 
-def _apply(p: Any, cmd: EscposCommand, profile: Profile) -> None:
+def _apply(p: Any, cmd: EscposCommand, profile: Profile, cfg: AgentConfig) -> None:
     t = cmd.type.lower()
+    mult = cfg.escpos_size_multiplier or 1.0
+    default_w = cfg.escpos_default_width or 1
+    default_h = cfg.escpos_default_height or 1
+    default_font = cfg.escpos_default_font or "a"
     if t == "text":
         kwargs: dict[str, Any] = {}
         if cmd.align:
@@ -74,17 +90,20 @@ def _apply(p: Any, cmd: EscposCommand, profile: Profile) -> None:
             kwargs["bold"] = cmd.bold
         if cmd.underline is not None:
             kwargs["underline"] = cmd.underline
-        if cmd.width:
-            kwargs["width"] = cmd.width
-        if cmd.height:
-            kwargs["height"] = cmd.height
-        if cmd.font:
-            kwargs["font"] = cmd.font
-        if kwargs:
-            p.set(**kwargs)
+        kwargs["width"] = _effective_size(cmd.width, default_w, mult)
+        kwargs["height"] = _effective_size(cmd.height, default_h, mult)
+        kwargs["font"] = cmd.font or default_font
+        p.set(**kwargs)
         p.text((cmd.text or "") + "\n")
-        # reset to defaults after styled lines
-        p.set(align="left", bold=False, underline=0, width=1, height=1, font="a")
+        # reset to defaults after styled lines (respeitando config)
+        p.set(
+            align="left",
+            bold=False,
+            underline=0,
+            width=_clamp_size(round(default_w * mult)),
+            height=_clamp_size(round(default_h * mult)),
+            font=default_font,
+        )
     elif t == "raw_text":
         p.text(cmd.text or "")
     elif t == "newline":

@@ -25,6 +25,18 @@ class ConfigUpdate(BaseModel):
     allowed_origins: list[str] | None = None
     log_level: str | None = None
     sumatra_path: str | None = None
+    # ESC/POS defaults
+    escpos_default_width: int | None = Field(default=None, ge=1, le=8)
+    escpos_default_height: int | None = Field(default=None, ge=1, le=8)
+    escpos_default_font: Literal["a", "b"] | None = None
+    escpos_size_multiplier: float | None = Field(default=None, ge=0.5, le=4.0)
+    # PDF defaults
+    pdf_fit_mode: Literal["fit", "noscale", "shrink"] | None = None
+    pdf_scale: float | None = Field(default=None, ge=0.5, le=3.0)
+    pdf_margin_top_mm: float | None = Field(default=None, ge=0, le=50)
+    pdf_margin_right_mm: float | None = Field(default=None, ge=0, le=50)
+    pdf_margin_bottom_mm: float | None = Field(default=None, ge=0, le=50)
+    pdf_margin_left_mm: float | None = Field(default=None, ge=0, le=50)
 
 
 class RawPayload(BaseModel):
@@ -128,19 +140,49 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "allowed_origins": c.allowed_origins,
             "log_level": c.log_level,
             "sumatra_path": c.sumatra_path,
+            "escpos_default_width": c.escpos_default_width,
+            "escpos_default_height": c.escpos_default_height,
+            "escpos_default_font": c.escpos_default_font,
+            "escpos_size_multiplier": c.escpos_size_multiplier,
+            "pdf_fit_mode": c.pdf_fit_mode,
+            "pdf_scale": c.pdf_scale,
+            "pdf_margin_top_mm": c.pdf_margin_top_mm,
+            "pdf_margin_right_mm": c.pdf_margin_right_mm,
+            "pdf_margin_bottom_mm": c.pdf_margin_bottom_mm,
+            "pdf_margin_left_mm": c.pdf_margin_left_mm,
         }
 
     @app.post("/config")
     def config_set(payload: ConfigUpdate) -> dict:
         c = load_config()
+        # Campos que exigem restart (CORS, log_level, sumatra_path)
+        restart = False
         if payload.allowed_origins is not None:
             c.allowed_origins = payload.allowed_origins
+            restart = True
         if payload.log_level is not None:
             c.log_level = payload.log_level
+            restart = True
         if payload.sumatra_path is not None:
             c.sumatra_path = payload.sumatra_path
+        # Campos de impressão — aplicados em tempo real (load_config por request)
+        for fld in (
+            "escpos_default_width",
+            "escpos_default_height",
+            "escpos_default_font",
+            "escpos_size_multiplier",
+            "pdf_fit_mode",
+            "pdf_scale",
+            "pdf_margin_top_mm",
+            "pdf_margin_right_mm",
+            "pdf_margin_bottom_mm",
+            "pdf_margin_left_mm",
+        ):
+            val = getattr(payload, fld, None)
+            if val is not None:
+                setattr(c, fld, val)
         save_config(c)
-        return {"status": "ok", "restart_required": True}
+        return {"status": "ok", "restart_required": restart}
 
     # ── Print: ESC/POS ─────────────────────────────────
     @app.post("/print/escpos")

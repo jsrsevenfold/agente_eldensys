@@ -100,6 +100,10 @@ class AgentTray:
 
         menu = pystray.Menu(
             pystray.MenuItem("Abrir pasta do agente", self._open_appdir),
+            pystray.MenuItem("Editar config.json (fonte/margens)", self._open_config),
+            pystray.MenuItem("Abrir pasta de logs", self._open_logs),
+            pystray.MenuItem("Verificar agente (/health)", self._open_url),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Sair", self._quit),
         )
 

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:/DEV/EldenSys\" 2>/dev/null | head -50)",
+      "Read(//c/DEV/EldenSys/**)",
+      "Bash(python -c \"from pypdf import PdfReader, PdfWriter, Transformation; from pypdf.generic import RectangleObject; print\\('ok'\\)\")"
+    ]
+  }
+}

@@ -38,6 +38,32 @@ class AgentConfig:
     log_level: str = "INFO"
     sumatra_path: str = ""  # auto-detected if empty
 
+    # ── ESC/POS defaults (aplicados quando o comando não especifica) ──
+    # Multiplicador de largura/altura do texto (1-8). Aumentar = texto maior.
+    escpos_default_width: int = 1
+    escpos_default_height: int = 1
+    # Fonte padrão: "a" (12x24 dots, padrão) ou "b" (9x17 dots, menor).
+    escpos_default_font: str = "a"
+    # Multiplicadores aplicados POR CIMA do width/height vindo do comando.
+    # Ex.: comando manda width=1, multiplier=2 → imprime com width=2.
+    escpos_size_multiplier: float = 1.0
+
+    # ── PDF print options (aplicados em /print/pdf) ──
+    # Modo de ajuste do SumatraPDF: "fit", "noscale" ou "shrink".
+    # - fit:     escala pra encher a página (default, melhor pra A4 e térmica)
+    # - noscale: imprime 1:1 (pode cortar se PDF > papel)
+    # - shrink:  só reduz se for maior que o papel
+    pdf_fit_mode: str = "fit"
+    # Escala aplicada ao conteúdo do PDF (1.0 = sem alteração).
+    # >1.0 aumenta tudo; <1.0 reduz. Útil pra A4. Em térmica pode cortar.
+    pdf_scale: float = 1.0
+    # Margens adicionadas ao PDF (em mm). Empurram o conteúdo pra dentro.
+    # Útil pra impressoras com margem mínima diferente do PDF de origem.
+    pdf_margin_top_mm: float = 0.0
+    pdf_margin_right_mm: float = 0.0
+    pdf_margin_bottom_mm: float = 0.0
+    pdf_margin_left_mm: float = 0.0
+
 
 def load_config() -> AgentConfig:
     if not CONFIG_PATH.exists():
