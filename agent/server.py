@@ -22,26 +22,12 @@ log = logging.getLogger("eldensys.agent.server")
 
 # ── Pydantic body models (module-level for proper FastAPI body detection) ──
 class ConfigUpdate(BaseModel):
+    """Campos editáveis via API. O agente não tem mais opções de formatação
+    de impressão — tudo isso é controlado pelo EldenSys que gera os PDFs."""
+
     allowed_origins: list[str] | None = None
     log_level: str | None = None
     sumatra_path: str | None = None
-    # ESC/POS defaults
-    escpos_default_width: int | None = Field(default=None, ge=1, le=8)
-    escpos_default_height: int | None = Field(default=None, ge=1, le=8)
-    escpos_default_font: Literal["a", "b"] | None = None
-    escpos_size_multiplier: float | None = Field(default=None, ge=0.5, le=4.0)
-    escpos_default_bold: bool | None = None
-    escpos_left_margin_mm: float | None = Field(default=None, ge=0, le=30)
-    escpos_right_margin_mm: float | None = Field(default=None, ge=0, le=30)
-    escpos_top_margin_mm: float | None = Field(default=None, ge=0, le=30)
-    escpos_bottom_margin_mm: float | None = Field(default=None, ge=0, le=30)
-    # PDF defaults
-    pdf_fit_mode: Literal["fit", "noscale", "shrink"] | None = None
-    pdf_scale: float | None = Field(default=None, ge=0.5, le=3.0)
-    pdf_margin_top_mm: float | None = Field(default=None, ge=0, le=50)
-    pdf_margin_right_mm: float | None = Field(default=None, ge=0, le=50)
-    pdf_margin_bottom_mm: float | None = Field(default=None, ge=0, le=50)
-    pdf_margin_left_mm: float | None = Field(default=None, ge=0, le=50)
 
 
 class RawPayload(BaseModel):
@@ -145,27 +131,12 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "allowed_origins": c.allowed_origins,
             "log_level": c.log_level,
             "sumatra_path": c.sumatra_path,
-            "escpos_default_width": c.escpos_default_width,
-            "escpos_default_height": c.escpos_default_height,
-            "escpos_default_font": c.escpos_default_font,
-            "escpos_size_multiplier": c.escpos_size_multiplier,
-            "escpos_default_bold": c.escpos_default_bold,
-            "escpos_left_margin_mm": c.escpos_left_margin_mm,
-            "escpos_right_margin_mm": c.escpos_right_margin_mm,
-            "escpos_top_margin_mm": c.escpos_top_margin_mm,
-            "escpos_bottom_margin_mm": c.escpos_bottom_margin_mm,
-            "pdf_fit_mode": c.pdf_fit_mode,
-            "pdf_scale": c.pdf_scale,
-            "pdf_margin_top_mm": c.pdf_margin_top_mm,
-            "pdf_margin_right_mm": c.pdf_margin_right_mm,
-            "pdf_margin_bottom_mm": c.pdf_margin_bottom_mm,
-            "pdf_margin_left_mm": c.pdf_margin_left_mm,
         }
 
     @app.post("/config")
     def config_set(payload: ConfigUpdate) -> dict:
         c = load_config()
-        # Campos que exigem restart (CORS, log_level, sumatra_path)
+        # Todas as alterações de infra (CORS, log, sumatra) exigem restart.
         restart = False
         if payload.allowed_origins is not None:
             c.allowed_origins = payload.allowed_origins
@@ -175,27 +146,6 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             restart = True
         if payload.sumatra_path is not None:
             c.sumatra_path = payload.sumatra_path
-        # Campos de impressão — aplicados em tempo real (load_config por request)
-        for fld in (
-            "escpos_default_width",
-            "escpos_default_height",
-            "escpos_default_font",
-            "escpos_size_multiplier",
-            "escpos_default_bold",
-            "escpos_left_margin_mm",
-            "escpos_right_margin_mm",
-            "escpos_top_margin_mm",
-            "escpos_bottom_margin_mm",
-            "pdf_fit_mode",
-            "pdf_scale",
-            "pdf_margin_top_mm",
-            "pdf_margin_right_mm",
-            "pdf_margin_bottom_mm",
-            "pdf_margin_left_mm",
-        ):
-            val = getattr(payload, fld, None)
-            if val is not None:
-                setattr(c, fld, val)
         save_config(c)
         return {"status": "ok", "restart_required": restart}
 

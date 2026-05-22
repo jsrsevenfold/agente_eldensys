@@ -1,4 +1,13 @@
-"""Agent configuration loaded from %APPDATA%\\EldenSysAgent\\config.json."""
+"""Agent configuration loaded from %APPDATA%\\EldenSysAgent\\config.json.
+
+A partir da v0.2, o agente é um **intermediário puro** — ele apenas relaya
+comandos de impressão do EldenSys pra impressora. Toda a configuração de
+formato de cupom (largura, margens, escala, fonte) é feita no próprio
+EldenSys e embutida no PDF/ESC-POS enviado.
+
+Esta configuração mantém só o essencial: host/port do servidor local,
+CORS, log e caminho do SumatraPDF.
+"""
 
 from __future__ import annotations
 
@@ -38,49 +47,28 @@ class AgentConfig:
     log_level: str = "INFO"
     sumatra_path: str = ""  # auto-detected if empty
 
-    # ── ESC/POS defaults (aplicados quando o comando não especifica) ──
-    # Multiplicador de largura/altura do texto (1-8). Aumentar = texto maior.
-    escpos_default_width: int = 1
-    escpos_default_height: int = 1
-    # Fonte padrão: "a" (12x24 dots, padrão) ou "b" (9x17 dots, menor).
-    escpos_default_font: str = "a"
-    # Multiplicadores aplicados POR CIMA do width/height vindo do comando.
-    # Ex.: comando manda width=1, multiplier=2 → imprime com width=2.
-    escpos_size_multiplier: float = 1.0
-    # Negrito padrão para todo texto (deixa a impressão mais escura/visível).
-    # Quando True, qualquer texto que não especifica bold sai em negrito.
-    escpos_default_bold: bool = False
-    # Margens do cupom térmico em mm. Aplicadas via comandos ESC/POS nativos:
-    # - left:   GS L (set left margin)
-    # - right:  GS W (set print area width) calculada a partir do perfil
-    # - top:    ESC J (feed paper) no início
-    # - bottom: ESC J (feed paper) antes do cut (ou no final, se não houver cut)
-    escpos_left_margin_mm: float = 0.0
-    escpos_right_margin_mm: float = 0.0
-    escpos_top_margin_mm: float = 0.0
-    escpos_bottom_margin_mm: float = 0.0
 
-    # ── PDF print options (aplicados em /print/pdf) ──
-    # Modo de ajuste do SumatraPDF: "fit", "noscale" ou "shrink".
-    # - fit:     escala pra encher a página (default, melhor pra A4 e térmica)
-    # - noscale: imprime 1:1 (pode cortar se PDF > papel)
-    # - shrink:  só reduz se for maior que o papel
-    pdf_fit_mode: str = "fit"
-    # Escala aplicada ao conteúdo do PDF (1.0 = sem alteração).
-    # >1.0 aumenta tudo; <1.0 reduz. Útil pra A4. Em térmica pode cortar.
-    pdf_scale: float = 1.0
-    # Margens adicionadas ao PDF (em mm). Empurram o conteúdo pra dentro.
-    # Útil pra impressoras com margem mínima diferente do PDF de origem.
-    pdf_margin_top_mm: float = 0.0
-    pdf_margin_right_mm: float = 0.0
-    pdf_margin_bottom_mm: float = 0.0
-    pdf_margin_left_mm: float = 0.0
-    # Desloca o conteúdo do PDF horizontalmente sem mudar o tamanho da
-    # página. Útil pra térmicas que cortam letras na borda direita:
-    # aumente este valor (3-10mm) que o conteúdo "anda" pra esquerda
-    # e sai inteiro. Diferente de pdf_margin_left/right (que mudam a
-    # mediabox), este só translada o que vai pro papel.
-    pdf_thermal_shift_left_mm: float = 0.0
+# Lista de chaves de config que existiam em versões anteriores e foram
+# removidas. Quando encontradas no JSON, são ignoradas silenciosamente
+# (assim instalações antigas não quebram após atualização).
+_DEPRECATED_KEYS = {
+    "escpos_default_width",
+    "escpos_default_height",
+    "escpos_default_font",
+    "escpos_size_multiplier",
+    "escpos_default_bold",
+    "escpos_left_margin_mm",
+    "escpos_right_margin_mm",
+    "escpos_top_margin_mm",
+    "escpos_bottom_margin_mm",
+    "pdf_fit_mode",
+    "pdf_scale",
+    "pdf_margin_top_mm",
+    "pdf_margin_right_mm",
+    "pdf_margin_bottom_mm",
+    "pdf_margin_left_mm",
+    "pdf_thermal_shift_left_mm",
+}
 
 
 def load_config() -> AgentConfig:
@@ -91,6 +79,8 @@ def load_config() -> AgentConfig:
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         cfg = AgentConfig()
+        # Carrega apenas chaves que existem no dataclass atual; ignora as
+        # deprecated (vindas de versões antigas do agente).
         for k, v in data.items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
@@ -100,9 +90,11 @@ def load_config() -> AgentConfig:
         if "*" not in cfg.allowed_origins:
             cfg.allowed_origins = ["*"]
             needs_save = True
-        # Auto-migração: regrava o arquivo se faltar qualquer campo novo
-        # (ex.: usuário atualizou o agente e o JSON antigo não tinha pdf_scale,
-        # escpos_default_width, margens etc.).
+        # Auto-migração: reescreve o arquivo se ele tem chaves deprecated,
+        # purgando-as e mantendo o JSON enxuto.
+        if any(k in _DEPRECATED_KEYS for k in data.keys()):
+            needs_save = True
+        # Auto-migração: regrava se faltar qualquer campo novo do dataclass.
         expected_keys = set(asdict(AgentConfig()).keys())
         if not expected_keys.issubset(data.keys()):
             needs_save = True
