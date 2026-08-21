@@ -1,8 +1,9 @@
 """PDF printing via embedded SumatraPDF.
 
-Política: o agente imprime PDFs **no tamanho original** (`noscale`). Toda
-a formatação (largura, margens, escala) é responsabilidade do EldenSys
-que gera o PDF. Aqui só relayamos pro Sumatra sem alterar nada.
+Política: o agente imprime PDFs **no tamanho original** (`noscale`) e **na
+orientação original** (`disable-auto-rotation`). Toda a formatação (largura,
+margens, escala, orientação) é responsabilidade do EldenSys que gera o PDF.
+Aqui só relayamos pro Sumatra sem alterar nada.
 """
 
 from __future__ import annotations
@@ -59,10 +60,18 @@ def _build_print_settings(
 ) -> str:
     """Constrói a string -print-settings do Sumatra.
 
-    Sempre inclui `noscale` — o agente nunca escala o PDF; o EldenSys
-    é quem decide o tamanho do papel ao gerar o documento.
+    Sempre inclui `noscale` e `disable-auto-rotation` — o agente nunca escala
+    nem gira o PDF; o EldenSys gera o documento já no tamanho e orientação
+    finais. Sem o disable, o Sumatra rotaciona 90° quando a orientação da
+    página (ex. etiqueta 70×30, paisagem) difere da orientação do papel do
+    driver — MESMO com noscale (noscale controla escala, não rotação). Era a
+    causa das etiquetas saírem deitadas na Argox/Elgin.
+
+    Sumatra antigo (fallback de sistema em find_sumatra) ignora tokens
+    desconhecidos: degrada pro comportamento anterior, sem crash. O bundled
+    (vendor/) é 3.6.1, que suporta o token.
     """
-    parts: list[str] = ["noscale"]
+    parts: list[str] = ["noscale", "disable-auto-rotation"]
     if copies and copies > 1:
         parts.append(f"{copies}x")
     if paper:
@@ -104,6 +113,10 @@ def print_pdf(
             settings,
             tmp.name,
         ]
+
+        # Linha de comando completa no log: reproduzível por copia-e-cola e
+        # denuncia quando find_sumatra caiu num Sumatra de sistema (antigo).
+        log.info("SumatraPDF: %s", subprocess.list2cmdline(args))
 
         # CREATE_NO_WINDOW = 0x08000000 to suppress console flash on frozen builds
         creationflags = 0x08000000 if sys.platform == "win32" else 0

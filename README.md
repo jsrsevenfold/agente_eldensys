@@ -161,28 +161,19 @@ próxima impressão (sem reiniciar o agente). Já mudanças em
 |                            | do comando. Útil pra deixar TODAS as impressões maiores numa máquina   |
 |                            | específica sem mexer no frontend. Ex.: `2.0` dobra tudo.               |
 
-**PDF** (rota `/print/pdf` — NFC-e, DANFE, recibos A4, comandas HTML):
+**PDF** (rota `/print/pdf` — NFC-e, DANFE, recibos A4, comandas HTML, etiquetas):
 
-| Campo                  | O que faz                                                                  |
-|------------------------|----------------------------------------------------------------------------|
-| `pdf_fit_mode`         | Modo do SumatraPDF: `"fit"` (escala pra caber, default), `"noscale"` (1:1, |
-|                        | pode cortar) ou `"shrink"` (só reduz se passar do papel).                  |
-| `pdf_scale`            | Escala do conteúdo (0.5-3.0). `1.2` aumenta 20%. Em A4 funciona bem; em    |
-|                        | térmica pode cortar o lado direito — combine com `noscale`.                |
-| `pdf_margin_left_mm`   | Margem esquerda extra em mm. Empurra o conteúdo pra direita.               |
-| `pdf_margin_right_mm`  | Margem direita extra em mm (apenas amplia a página, não corta).            |
-| `pdf_margin_top_mm`    | Margem superior extra em mm.                                               |
-| `pdf_margin_bottom_mm` | Margem inferior extra em mm.                                               |
+O agente imprime PDFs sempre **1:1** (`noscale`) e **sem auto-rotação**
+(`disable-auto-rotation` do SumatraPDF): tamanho, margens, escala e orientação
+são responsabilidade do EldenSys, que gera o PDF já no formato final. Sem o
+`disable-auto-rotation`, o Sumatra girava a página 90° quando a orientação
+dela diferia da orientação do papel do driver (etiquetas saíam deitadas).
+Os campos antigos de ajuste (`pdf_fit_mode`, `pdf_scale`, `pdf_margin_*_mm`)
+foram removidos na v0.2 — se existirem no `config.json`, são ignorados.
 
-> **Dica de visibilidade pra térmica 80mm**:
-> 1. Prefira `/print/escpos` em vez de PDF rasterizado quando possível —
->    o ESC/POS imprime em texto nativo (mais nítido) e respeita
->    `escpos_size_multiplier`.
-> 2. Para PDFs vindos do frontend (comanda HTML), aumente `pdf_scale` para
->    `1.2`-`1.5` e mantenha `pdf_fit_mode: "fit"` — a página fica maior, o
->    SumatraPDF ajusta pra largura da bobina, e o texto sai maior.
-> 3. Se aparecer corte na direita, reduza `pdf_margin_left_mm` (ou suba o
->    `pdf_scale` aos poucos).
+> **Dica pra térmica**: prefira `/print/escpos` quando possível — texto
+> nativo sai mais nítido que PDF rasterizado e respeita
+> `escpos_size_multiplier`.
 
 > **Importante**: ajuste `allowed_origins` com o domínio de produção real
 > do seu EldenSys antes de empacotar o instalador. Origens não listadas
