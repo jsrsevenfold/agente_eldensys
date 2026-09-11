@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .config import AgentConfig, load_config, save_config
 from .escpos_renderer import EscposPayload, render
-from .pdf_printer import print_pdf
+from .pdf_printer import ensure_label_appdata, print_pdf
 from .printers import get_default_printer, list_printers, write_raw
 
 log = logging.getLogger("eldensys.agent.server")
@@ -28,6 +28,7 @@ class ConfigUpdate(BaseModel):
     allowed_origins: list[str] | None = None
     log_level: str | None = None
     sumatra_path: str | None = None
+    sumatra_label_disable_antialias: bool | None = None
 
 
 class RawPayload(BaseModel):
@@ -42,6 +43,10 @@ class PdfPayload(BaseModel):
     copies: int = Field(default=1, ge=1, le=99)
     paper: Literal["A4", "A5", "Letter", "Legal"] | None = None
     duplex: bool = False
+    #: "label" pede rasterizacao sem anti-aliasing (termica 1-bit).
+    #: Agentes <= 0.3.0 ignoram o campo (Pydantic descarta extras), entao
+    #: o EldenSys pode mandar sempre, sem gate de versao.
+    render_mode: Literal["default", "label"] = "default"
 
 
 class TestPayload(BaseModel):
@@ -93,6 +98,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     cfg = cfg or load_config()
     app = FastAPI(title="EldenSys Print Agent", version=__version__)
 
+    # Perfil -appdata do modo etiqueta: UMA escrita, aqui no startup.
+    # Reescrever por job disputaria com o proprio Sumatra, que regrava o
+    # arquivo ao sair. Nunca levanta.
+    ensure_label_appdata()
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.allowed_origins,
@@ -131,6 +141,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "allowed_origins": c.allowed_origins,
             "log_level": c.log_level,
             "sumatra_path": c.sumatra_path,
+            "sumatra_label_disable_antialias": c.sumatra_label_disable_antialias,
         }
 
     @app.post("/config")
@@ -146,6 +157,9 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             restart = True
         if payload.sumatra_path is not None:
             c.sumatra_path = payload.sumatra_path
+        if payload.sumatra_label_disable_antialias is not None:
+            # Vale a partir do proximo job: e lido em print_pdf.
+            c.sumatra_label_disable_antialias = payload.sumatra_label_disable_antialias
         save_config(c)
         return {"status": "ok", "restart_required": restart}
 
@@ -181,6 +195,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 copies=payload.copies,
                 paper=payload.paper,
                 duplex=payload.duplex,
+                render_mode=payload.render_mode,
             )
             return {"status": "ok"}
         except Exception as e:

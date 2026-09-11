@@ -46,6 +46,11 @@ class AgentConfig:
     allowed_origin_regex: str = DEFAULT_ALLOWED_ORIGIN_REGEX
     log_level: str = "INFO"
     sumatra_path: str = ""  # auto-detected if empty
+    #: Desliga o anti-aliasing do MuPDF nos jobs com render_mode="label"
+    #: (ver docstring de pdf_printer). Fica em config para poder ser
+    #: desligado numa loja sem instalador novo, caso o texto pequeno saia
+    #: com peso irregular naquela impressora.
+    sumatra_label_disable_antialias: bool = True
 
 
 # Lista de chaves de config que existiam em versões anteriores e foram

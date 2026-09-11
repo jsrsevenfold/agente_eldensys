@@ -83,6 +83,14 @@ if ($isccExit -ne 0) {
 $installerOut = Get-ChildItem -Path (Join-Path $root "dist\installer") -Filter "EldenSysAgent-Setup-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($installerOut) {
     Write-Host "==> Instalador gerado: $($installerOut.FullName)" -ForegroundColor Green
+
+    # O EldenSys baixa o agente por uma URL FIXA:
+    #   releases/latest/download/EldenSysAgent-Setup.exe   (PrintAgentSettings.tsx)
+    # O Inno gera o nome COM versao, entao deixamos tambem uma copia sem versao
+    # para subir como asset do release com o nome exato que o frontend espera.
+    $releaseAsset = Join-Path $installerOut.Directory "EldenSysAgent-Setup.exe"
+    Copy-Item $installerOut.FullName $releaseAsset -Force
+    Write-Host "==> Asset do release: $releaseAsset" -ForegroundColor Green
 } else {
     Write-Host "==> Aviso: nao localizei o .exe do instalador em dist\installer" -ForegroundColor Yellow
 }

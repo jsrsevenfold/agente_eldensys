@@ -2,7 +2,7 @@
 ; Compile with Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
 
 #define MyAppName "EldenSys Agent"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.4.0"
 #define MyAppPublisher "EldenSys"
 #define MyAppURL "https://eldensys.com.br"
 #define MyAppExeName "EldenSysAgent.exe"
@@ -25,6 +25,9 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesInstallIn64BitMode=x64
+; O agente roda na bandeja. Sem o mutex, atualizar por cima falha com
+; "arquivo em uso" e o lojista nao sabe que precisa fechar o icone.
+AppMutex=Local\EldenSysAgent_SingleInstance_v1
 SetupIconFile=..\assets\icon.ico
 
 [Languages]
@@ -53,6 +56,20 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Iniciar {#MyAppName} agora"; \
     Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  { Mata o agente ANTES de copiar os arquivos. O AppMutex acima ja avisa,
+    mas fechar pela bandeja nao e obvio pro lojista, e o mutex pode nao
+    estar registrado se o agente subiu por outro caminho. }
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /F /IM {#MyAppExeName}', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(700);
+  Result := '';
+end;
 
 [UninstallRun]
 ; Mata o processo antes de remover, se estiver rodando
