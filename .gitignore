@@ -10,3 +10,4 @@ vendor/SumatraPDF.exe
 .env
 .vscode/
 .idea/
+.r2.env
