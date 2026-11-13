@@ -1,9 +1,14 @@
-# EldenSys Print Agent
+# EldenSys Agent
 
-Agente local de impressão para Windows. Permite que o EldenSys ERP
-(rodando em produção no Railway) imprima cupons térmicos (ESC/POS) e
-documentos PDF (NFC-e, DANFE, recibos) diretamente nas impressoras
-instaladas no Windows do caixa.
+Agente local para Windows. Permite que o EldenSys ERP (rodando em produção
+no Railway) alcance o que só existe no computador da loja:
+
+- **Impressão local** — cupons térmicos (ESC/POS) e documentos PDF (NFC-e,
+  DANFE, recibos, etiquetas) nas impressoras instaladas no Windows do caixa.
+- **Canal remoto (v0.5)** — trabalhos disparados de *outro aparelho*
+  (celular, outro PC): gravar a **carga da balança** na pasta que o programa
+  da balança lê e **imprimir etiquetas** na impressora deste computador.
+  Ver [Canal remoto](#canal-remoto-carga-de-balança-e-etiquetas-de-outro-aparelho).
 
 ## Arquitetura
 
@@ -44,6 +49,55 @@ Serviços rodam em **Session 0** com a conta `LocalSystem`. Nesse contexto:
 
 O tray app resolve tudo isso, é auto-iniciado via `HKCU\...\Run` (não
 exige admin no boot), e o cliente vê o ícone na bandeja.
+
+## Canal remoto: carga de balança e etiquetas de outro aparelho
+
+A impressão local só funciona quando o navegador está **na mesma máquina**
+do agente (`localhost`). Para um celular ou outro PC mandar algo para o
+computador da loja, o caminho é outro — passa pelo servidor:
+
+```
+Celular / outro PC ──cria trabalho──▶ Backend EldenSys (fila da loja)
+                                           ▲
+                                           │ poll / ack  (HTTPS de SAÍDA)
+                              EldenSys Agent no PC da loja
+                                   │                    │
+                          pasta da balança     impressora de etiquetas
+```
+
+- **Só conexão de saída.** O agente pergunta ao EldenSys se há trabalho
+  (`POST {api}/agent/poll/`) e confirma o resultado
+  (`POST {api}/agent/jobs/<id>/ack/`). Nenhuma porta é aberta e **nenhuma
+  rota nova existe no loopback** — a rota local não tem senha e aceita
+  qualquer site, então gravar arquivo por ela seria um risco.
+- **Pareamento.** No EldenSys, em *Configurações → Impressão → Agentes da
+  loja*, gere um código (`ELD1-…`) e cole na janela do agente, aba **Loja**.
+  O código traz o endereço da API, a loja e um segredo. O servidor amarra o
+  código à primeira instalação que o usa: o mesmo código em outro PC é
+  recusado.
+- **Os destinos são desta máquina.** A pasta da balança e a impressora de
+  etiquetas são escolhidas **na janela do agente**. O servidor manda só nome
+  de arquivo e bytes — nunca caminho de disco nem nome de impressora — e o
+  nome do arquivo é validado (sem `..`, sem separador, só `.txt`).
+- **Agente não pareado não faz rede nenhuma.** PCs que usam o agente só para
+  imprimir continuam exatamente como antes.
+
+| Trabalho (`kind`) | O que o agente faz |
+|---|---|
+| `scale_file` | Grava o(s) TXT de carga (Toledo `txitens.txt`, Filizola `CADTXT.TXT` + `SETORTXT.TXT`, Urano) na pasta da balança, byte a byte, com troca atômica do arquivo. |
+| `label_pdf`  | Imprime o PDF na impressora de etiquetas configurada, pelo mesmo caminho do `/print/pdf` com `render_mode: "label"`. |
+
+O ritmo do polling é ditado pelo servidor (`poll_interval`: lento quando
+ocioso, rápido quando alguém está na tela de Etiquetas). Um trabalho já
+concluído nunca é refeito — se o servidor reentregar porque a confirmação se
+perdeu, o agente só repete a confirmação (um lote de etiquetas não sai em
+dobro por queda de rede).
+
+Módulos: `agent/remote_client.py` (pareamento + HTTP), `agent/remote_jobs.py`
+(ciclo poll → executa → ack), `agent/scale_files.py` (gravação segura).
+
+> O agente roda na sessão do usuário: se o Windows do PC da loja estiver sem
+> ninguém logado, os trabalhos remotos ficam aguardando.
 
 ## Desenvolvimento
 
@@ -120,27 +174,34 @@ Arquivo: `%APPDATA%\EldenSysAgent\config.json`
   "host": "127.0.0.1",
   "port": 17777,
   "allowed_origins": ["*"],
+  "allowed_origin_regex": "...",
   "log_level": "INFO",
   "sumatra_path": "",
+  "sumatra_label_disable_antialias": true,
 
-  "escpos_default_width": 1,
-  "escpos_default_height": 1,
-  "escpos_default_font": "a",
-  "escpos_size_multiplier": 1.0,
-
-  "pdf_fit_mode": "fit",
-  "pdf_scale": 1.0,
-  "pdf_margin_top_mm": 0.0,
-  "pdf_margin_right_mm": 0.0,
-  "pdf_margin_bottom_mm": 0.0,
-  "pdf_margin_left_mm": 0.0
+  "scale_dir": "C:\\Toledo\\Carga",
+  "remote_label_printer": "Argox OS-214",
+  "server_url": "https://api.../api",
+  "server_tenant": "loja_x",
+  "server_token": "esa_...",
+  "instance_id": "..."
 }
 ```
 
+| Chave (canal remoto) | O que é |
+|---|---|
+| `scale_dir` | Pasta onde a carga da balança é gravada. Vazio = este PC não recebe carga. |
+| `remote_label_printer` | Impressora usada pelas etiquetas enviadas de outro aparelho. Vazio = desligado. |
+| `server_url`, `server_tenant`, `server_token` | Pareamento com a loja (preenchidos pelo botão **Parear**). `server_token` é segredo: nunca é devolvido pelo `GET /config`. |
+| `instance_id` | Identidade fixa desta instalação, gerada na primeira execução. |
+
 **Forma recomendada**: clique duplo no ícone da bandeja (ou clique
-direito → **"Configurações de impressão..."**) — abre uma janela com
-abas (Cupom Térmico / Folha A4 / Avançado) onde você ajusta tudo
-sem editar JSON.
+direito → **"Configurações..."**) — abre uma janela com as abas
+**Geral** (log, SumatraPDF) e **Loja** (pareamento, pasta da balança,
+impressora de etiquetas remotas), sem editar JSON.
+
+A pasta da balança, a impressora de etiquetas e o pareamento valem
+imediatamente, sem reiniciar o agente.
 
 Para edição manual: clique direito → **"Editar config.json (avançado)"**.
 

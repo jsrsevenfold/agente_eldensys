@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 
 from .config import APP_DIR, CONFIG_PATH, LOG_DIR, load_config
 from .config_window import open_config_window_async
+from .remote_jobs import RemoteJobsWorker, set_worker
 from .server import create_app
 
 log = logging.getLogger("eldensys.agent.tray")
@@ -52,6 +53,10 @@ class AgentTray:
         self.server: uvicorn.Server | None = None
         self.server_thread: threading.Thread | None = None
         self.icon: pystray.Icon | None = None
+        # Canal remoto (carga de balança / etiquetas vindas de outro aparelho).
+        # Fica parado, sem rede, enquanto o agente não for pareado com a loja.
+        self.remote = RemoteJobsWorker()
+        set_worker(self.remote)
 
     # ── server lifecycle ───────────────────────────────
     def _serve(self) -> None:
@@ -94,6 +99,7 @@ class AgentTray:
 
     def _quit(self, _icon=None, _item=None) -> None:
         log.info("Encerrando agente via tray")
+        self.remote.stop()
         self.stop_server()
         if self.icon:
             self.icon.stop()
@@ -101,10 +107,11 @@ class AgentTray:
     # ── run ────────────────────────────────────────────
     def run(self) -> None:
         self.start_server()
+        self.remote.start()
 
         menu = pystray.Menu(
             pystray.MenuItem(
-                "Configurações de impressão...",
+                "Configurações...",
                 self._open_config_window,
                 default=True,
             ),

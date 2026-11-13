@@ -30,6 +30,7 @@ hiddenimports = [
     "tkinter",
     "tkinter.ttk",
     "tkinter.messagebox",
+    "tkinter.filedialog",
 ]
 
 a = Analysis(

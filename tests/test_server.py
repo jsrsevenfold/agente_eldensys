@@ -87,3 +87,52 @@ def test_config_expoe_e_alterna_o_antialias(client, monkeypatch, tmp_path):
     # Nao exige restart: print_pdf le a config a cada job.
     assert r.json()["restart_required"] is False
     assert salvos[-1].sumatra_label_disable_antialias is False
+
+
+PAREADO = {
+    "server_url": "https://api.eldensys.com.br/api",
+    "server_tenant": "loja_centro",
+    "server_token": "esa_segredo_do_pareamento",
+    "instance_id": "inst-123",
+    "scale_dir": "C:\\Toledo\\Carga",
+    "remote_label_printer": "Argox OS-214",
+}
+
+
+def test_config_nao_vaza_o_pareamento(client, monkeypatch):
+    """O loopback aceita qualquer origem (CORS *): o que GET /config devolve,
+    qualquer site aberto no navegador da loja consegue ler."""
+    monkeypatch.setattr(server, "load_config", lambda: AgentConfig(**PAREADO))
+    r = client.get("/config")
+    assert r.status_code == 200
+    assert not (set(PAREADO) & set(r.json()))
+    assert "esa_segredo_do_pareamento" not in r.text
+    assert "inst-123" not in r.text
+
+
+def test_post_config_preserva_o_pareamento_e_nao_o_altera(client, monkeypatch):
+    salvos: list = []
+    monkeypatch.setattr(server, "save_config", lambda c: salvos.append(c))
+    monkeypatch.setattr(server, "load_config", lambda: AgentConfig(**PAREADO))
+    r = client.post(
+        "/config",
+        json={
+            "log_level": "DEBUG",
+            # Um site malicioso tentando sequestrar o canal ou a pasta:
+            "server_url": "https://atacante.example/api",
+            "server_token": "trocado",
+            "scale_dir": "C:\\Windows\\System32",
+            "remote_label_printer": "Outra",
+        },
+    )
+    assert r.status_code == 200
+    gravado = salvos[-1]
+    assert gravado.log_level == "DEBUG"
+    for campo, valor in PAREADO.items():
+        assert getattr(gravado, campo) == valor
+
+
+def test_nao_existe_rota_local_que_grave_arquivo_ou_receba_trabalho(client):
+    """O canal remoto e so de SAIDA: nenhuma rota nova no loopback sem senha."""
+    rotas = {r.path for r in client.app.routes}
+    assert not any(p.startswith(("/scale", "/files", "/agent", "/jobs", "/remote")) for p in rotas)

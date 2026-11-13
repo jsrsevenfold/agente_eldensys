@@ -1,7 +1,7 @@
 [project]
 name = "eldensys-agent"
-version = "0.4.0"
-description = "EldenSys local print agent for Windows"
+version = "0.5.0"
+description = "EldenSys local agent for Windows (printing, scale files, remote labels)"
 requires-python = ">=3.11"
 
 [tool.ruff]
