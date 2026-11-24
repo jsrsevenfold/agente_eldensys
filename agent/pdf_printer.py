@@ -32,6 +32,7 @@ import tempfile
 from pathlib import Path
 
 from .config import APP_DIR, load_config
+from .recursos import resource_dir
 
 log = logging.getLogger("eldensys.agent.pdf")
 
@@ -81,14 +82,12 @@ def ensure_label_appdata() -> Path | None:
 
 
 def _resource_dir() -> Path:
-    """Return the dir where bundled resources live (PyInstaller compatible)."""
-    if getattr(sys, "frozen", False):
-        # PyInstaller onedir: sys._MEIPASS for onefile, else exe dir
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            return Path(meipass)
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    """Pasta dos recursos empacotados; repassa ``recursos.resource_dir``.
+
+    Continua existindo aqui porque os testes trocam esta função para fingir
+    o Sumatra empacotado.
+    """
+    return resource_dir()
 
 
 def _bundled_sumatra_paths() -> list[Path]:

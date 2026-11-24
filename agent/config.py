@@ -86,6 +86,17 @@ class AgentConfig:
     #: qualquer site se autorizar.
     biometria_origens_extras: list[str] = field(default_factory=list)
 
+    # ── Leitor biométrico (v0.6, ver agent/biometria) ──
+    #: Desliga a biometria neste PC (as rotas /biometria respondem 503
+    #: biometria_desligada e o leitor nunca é aberto).
+    biometria_habilitada: bool = True
+    #: Mostra a prévia (PNG pequena e desfocada) de cada leitura do cadastro.
+    biometria_previa: bool = True
+    #: Segundos que o leitor fica aberto depois de uma operação do usuário
+    #: (o cadastro são 4 leituras seguidas). Depois disso é devolvido: o PDV
+    #: offline no mesmo computador usa o mesmo leitor.
+    biometria_ocioso_s: float = 20.0
+
 
 # Lista de chaves de config que existiam em versões anteriores e foram
 # removidas. Quando encontradas no JSON, são ignoradas silenciosamente
