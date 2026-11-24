@@ -77,6 +77,15 @@ class AgentConfig:
     #: primeiro instance_id que o usa: o mesmo código em outro PC é recusado.
     instance_id: str = ""
 
+    # ── Origens das rotas sensíveis (ver agent/biometria/origem.py) ──
+    #: Libera http://localhost:5173 e http://127.0.0.1:5173 (Vite) nas rotas
+    #: sensíveis. Só para desenvolvimento; nunca exposto por rota HTTP.
+    biometria_permitir_dev: bool = False
+    #: Origens a mais aceitas nas rotas sensíveis (ex.: um domínio próprio
+    #: da loja). Só pelo config.json: uma rota que gravasse isto deixaria
+    #: qualquer site se autorizar.
+    biometria_origens_extras: list[str] = field(default_factory=list)
+
 
 # Lista de chaves de config que existiam em versões anteriores e foram
 # removidas. Quando encontradas no JSON, são ignoradas silenciosamente

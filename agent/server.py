@@ -5,13 +5,16 @@ from __future__ import annotations
 import base64
 import logging
 from io import BytesIO
+from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .biometria.origem import origem_permitida_cfg
 from .config import AgentConfig, load_config, save_config
 from .escpos_renderer import EscposPayload, render
 from .pdf_printer import ensure_label_appdata, print_pdf
@@ -70,6 +73,38 @@ _MINIMAL_PDF = (
     b"0000000100 00000 n \n0000000178 00000 n \n"
     b"trailer<</Size 5/Root 1 0 R>>\nstartxref\n260\n%%EOF\n"
 )
+
+
+def sumatra_path_aceito(caminho: str) -> bool:
+    """O ``sumatra_path`` vira o programa executado a cada PDF impresso.
+
+    Só aceita um ``SumatraPDF*.exe`` que exista NESTE computador (caminho
+    absoluto, fora de compartilhamento de rede). Vazio volta à detecção
+    automática (é o que "Restaurar padrões" grava).
+    """
+    caminho = caminho.strip()
+    if not caminho:
+        return True
+    if caminho.startswith(("\\\\", "//")):
+        return False
+    p = Path(caminho)
+    nome = p.name.lower()
+    if not p.is_absolute() or not (nome.startswith("sumatrapdf") and nome.endswith(".exe")):
+        return False
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+def _erro(status: int, erro: str, mensagem: str) -> JSONResponse:
+    """Erro no formato das rotas novas: ``{erro, mensagem, detail}``.
+
+    ``detail`` repete a mensagem para quem só lê ``detail`` (printAgent.ts).
+    """
+    return JSONResponse(
+        status_code=status, content={"erro": erro, "mensagem": mensagem, "detail": mensagem}
+    )
 
 
 def _build_test_escpos(printer: str, profile: Literal["58mm", "80mm"]) -> EscposPayload:
@@ -145,8 +180,28 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         }
 
     @app.post("/config")
-    def config_set(payload: ConfigUpdate) -> dict:
+    def config_set(payload: ConfigUpdate, request: Request):
         c = load_config()
+        # O CORS `*` deixa qualquer site aberto no navegador da loja chegar
+        # aqui, e `sumatra_path` é o programa que o agente executa no próximo
+        # PDF. O navegador SEMPRE manda Origin num POST de outra origem (até
+        # num ataque de DNS rebinding); sem Origin = ferramenta local (curl,
+        # testes), que já roda nesta máquina.
+        origem = request.headers.get("origin")
+        if origem is not None and not origem_permitida_cfg(origem, c):
+            log.warning("POST /config recusado: origem %r", origem[:200])
+            return _erro(
+                403,
+                "origem_recusada",
+                "Este site não pode alterar a configuração do EldenSys Agent.",
+            )
+        if payload.sumatra_path is not None and not sumatra_path_aceito(payload.sumatra_path):
+            return _erro(
+                422,
+                "sumatra_invalido",
+                "O caminho do SumatraPDF precisa apontar para um arquivo "
+                "SumatraPDF*.exe existente neste computador.",
+            )
         # Todas as alterações de infra (CORS, log, sumatra) exigem restart.
         restart = False
         if payload.allowed_origins is not None:
@@ -156,7 +211,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             c.log_level = payload.log_level
             restart = True
         if payload.sumatra_path is not None:
-            c.sumatra_path = payload.sumatra_path
+            c.sumatra_path = payload.sumatra_path.strip()
         if payload.sumatra_label_disable_antialias is not None:
             # Vale a partir do proximo job: e lido em print_pdf.
             c.sumatra_label_disable_antialias = payload.sumatra_label_disable_antialias

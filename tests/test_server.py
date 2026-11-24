@@ -132,6 +132,111 @@ def test_post_config_preserva_o_pareamento_e_nao_o_altera(client, monkeypatch):
         assert getattr(gravado, campo) == valor
 
 
+@pytest.fixture
+def gravados(monkeypatch):
+    """POST /config com config padrão em memória; guarda o que seria salvo."""
+    salvos: list = []
+    estado = {"cfg": AgentConfig()}
+    monkeypatch.setattr(server, "save_config", lambda c: salvos.append(c))
+    monkeypatch.setattr(server, "load_config", lambda: estado["cfg"])
+    return salvos, estado
+
+
+@pytest.mark.parametrize(
+    "origem",
+    [
+        "https://site-malicioso.example",
+        "null",
+        "",
+        "http://eldensys.hubdesktop.com.br",  # sem TLS
+        "https://eldensys.hubdesktop.com.br.evil.com",
+        "https://evil-eldensys.hubdesktop.com.br",
+        "https://eldensys.hubdesktop.com.br:8443",
+        "http://localhost:5173",  # dev sem a chave ligada
+    ],
+)
+def test_post_config_recusa_origem_fora_da_politica(client, gravados, origem):
+    """Um site qualquer aberto na loja não pode trocar o programa que o agente
+    executa a cada PDF (era assim até a v0.5: CORS `*` + sumatra_path livre)."""
+    salvos, _ = gravados
+    r = client.post(
+        "/config",
+        json={"sumatra_path": "C:\\Windows\\System32\\calc.exe", "log_level": "DEBUG"},
+        headers={"Origin": origem},
+    )
+    assert r.status_code == 403
+    assert r.json()["erro"] == "origem_recusada"
+    assert salvos == []
+
+
+@pytest.mark.parametrize(
+    "origem", ["https://eldensys.hubdesktop.com.br", "https://loja1.eldensys.hubdesktop.com.br"]
+)
+def test_post_config_aceita_a_producao_e_subdominios(client, gravados, origem):
+    salvos, _ = gravados
+    r = client.post("/config", json={"log_level": "DEBUG"}, headers={"Origin": origem})
+    assert r.status_code == 200
+    assert salvos[-1].log_level == "DEBUG"
+
+
+def test_post_config_dev_e_extras_so_pelo_config_json(client, gravados):
+    salvos, estado = gravados
+    estado["cfg"] = AgentConfig(
+        biometria_permitir_dev=True, biometria_origens_extras=["https://ERP.minhaloja.com.br/", "*"]
+    )
+    for origem in ("http://localhost:5173", "http://127.0.0.1:5173", "https://erp.minhaloja.com.br"):
+        r = client.post("/config", json={"log_level": "INFO"}, headers={"Origin": origem})
+        assert r.status_code == 200, origem
+    # O curinga escrito à mão no arquivo não vira "qualquer site".
+    r = client.post("/config", json={"log_level": "INFO"}, headers={"Origin": "https://x.example"})
+    assert r.status_code == 403
+    # Texto "false" no JSON editado à mão não liga as origens de dev.
+    estado["cfg"] = AgentConfig(biometria_permitir_dev="false")  # type: ignore[arg-type]
+    r = client.post("/config", json={"log_level": "INFO"}, headers={"Origin": "http://localhost:5173"})
+    assert r.status_code == 403
+
+
+def test_post_config_nao_grava_as_chaves_da_politica(client, gravados):
+    """As origens extras e a chave de dev nunca vêm por rota HTTP."""
+    salvos, _ = gravados
+    r = client.post(
+        "/config",
+        json={"biometria_permitir_dev": True, "biometria_origens_extras": ["https://x.example"]},
+    )
+    assert r.status_code == 200
+    assert salvos[-1].biometria_permitir_dev is False
+    assert salvos[-1].biometria_origens_extras == []
+
+
+def test_sumatra_path_so_aceita_sumatra_existente(client, gravados, tmp_path):
+    salvos, _ = gravados
+    sumatra = tmp_path / "SumatraPDF-3.6.1-64.exe"
+    sumatra.write_bytes(b"MZ")
+    outro = tmp_path / "calc.exe"
+    outro.write_bytes(b"MZ")
+    recusados = [
+        str(outro),
+        str(tmp_path / "SumatraPDF.exe"),  # não existe
+        str(tmp_path),  # pasta
+        "SumatraPDF.exe",  # relativo
+        "\\\\servidor\\share\\SumatraPDF.exe",  # rede
+        str(tmp_path / "SumatraPDF.exe.bat"),
+    ]
+    for caminho in recusados:
+        r = client.post("/config", json={"sumatra_path": caminho})
+        assert r.status_code == 422, caminho
+        assert r.json()["erro"] == "sumatra_invalido"
+    assert salvos == []
+
+    r = client.post("/config", json={"sumatra_path": f"  {sumatra}  "})
+    assert r.status_code == 200
+    assert salvos[-1].sumatra_path == str(sumatra)
+    # Vazio volta à detecção automática ("Restaurar padrões").
+    r = client.post("/config", json={"sumatra_path": ""})
+    assert r.status_code == 200
+    assert salvos[-1].sumatra_path == ""
+
+
 def test_nao_existe_rota_local_que_grave_arquivo_ou_receba_trabalho(client):
     """O canal remoto e so de SAIDA: nenhuma rota nova no loopback sem senha."""
     rotas = {r.path for r in client.app.routes}
