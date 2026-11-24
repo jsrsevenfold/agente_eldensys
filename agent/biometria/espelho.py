@@ -19,7 +19,9 @@ mesmo computador:
   fim (pausa curta entre lotes = janela para o PDV).
 
 ``biometria.json`` (em ``%APPDATA%\\EldenSysAgent``) guarda só versão, loja,
-série e contagens — NENHUM template e nenhum id.
+série e contagens — NENHUM template e nenhum id de digital. Guarda também o
+último agente visto no poll (``agent_id`` e nome da loja, amarrados ao
+pareamento): o status usa enquanto o processo ainda não teve poll.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,6 +80,16 @@ class EstadoEspelho:
     completo: bool = False
     faltando: int = 0
     sincronizado_em: str | None = None
+    #: Último agente visto no poll e o pareamento a que ele pertence
+    #: (``servico.impressao_do_pareamento``). Só o poll grava estes três; a
+    #: carga do espelho os preserva (``Espelho._salvar``).
+    agent_id: str = ""
+    loja: str = ""
+    pareamento: str = ""
+
+
+#: Campos que só o poll grava (``Espelho.guardar_agente``).
+_CAMPOS_AGENTE = ("agent_id", "loja", "pareamento")
 
 
 def ler_estado(caminho: Path) -> EstadoEspelho:
@@ -97,6 +109,9 @@ def ler_estado(caminho: Path) -> EstadoEspelho:
         "completo": bool,
         "faltando": int,
         "sincronizado_em": (str, type(None)),
+        "agent_id": str,
+        "loja": str,
+        "pareamento": str,
     }
     for f in fields(EstadoEspelho):
         valor = dados.get(f.name, getattr(estado, f.name))
@@ -181,6 +196,8 @@ class Espelho:
         self._relogio = relogio
 
         self._lock = threading.Lock()
+        #: Duas threads gravam o arquivo (carga do espelho e poll): uma por vez.
+        self._lock_disco = threading.Lock()
         self._estado: EstadoEspelho | None = None
         self._thread: threading.Thread | None = None
         self._em_andamento = False
@@ -201,9 +218,40 @@ class Espelho:
             return self._estado
 
     def _salvar(self, estado: EstadoEspelho) -> None:
+        """Grava o estado do espelho. Os campos do agente ficam como estão: a
+        carga começou antes e não pode desfazer um poll que chegou no meio."""
+        self._estado_atual()
         with self._lock:
-            self._estado = estado
-        gravar_estado(self._caminho, estado)
+            atual = self._estado
+            self._estado = replace(estado, **{c: getattr(atual, c) for c in _CAMPOS_AGENTE})
+        self._gravar()
+
+    def _gravar(self) -> None:
+        # Cada gravação leva o estado MAIS NOVO (lido já com a vez no disco):
+        # a última a terminar nunca é uma versão velha.
+        with self._lock_disco:
+            with self._lock:
+                estado = self._estado
+            gravar_estado(self._caminho, estado)
+
+    # ── último agente visto no poll ───────────────────
+    def agente_salvo(self, pareamento: str) -> tuple[str, str] | None:
+        """``(agent_id, loja)`` do último poll, se for deste pareamento."""
+        e = self._estado_atual()
+        if e.agent_id and pareamento and e.pareamento == pareamento:
+            return e.agent_id, e.loja
+        return None
+
+    def guardar_agente(self, agent_id: str, loja: str, pareamento: str) -> None:
+        """Anota o agente do poll; o disco só é tocado quando algo muda (o
+        poll vem a cada poucos segundos)."""
+        self._estado_atual()
+        with self._lock:
+            atual = self._estado
+            if (atual.agent_id, atual.loja, atual.pareamento) == (agent_id, loja, pareamento):
+                return
+            self._estado = replace(atual, agent_id=agent_id, loja=loja, pareamento=pareamento)
+        self._gravar()
 
     def estado(self) -> dict:
         e = self._estado_atual()
@@ -320,8 +368,10 @@ class Espelho:
             lambda sdk, ctx: (sdk.info(), sdk.ids()), usuario=False, nome="espelho"
         )
         ids_leitor = set(lidos)
+        # GetTemplateIDs respondeu: só o iDBio Pro responde (o comum dá -16).
         self._leitor.anotar(
             conectado=True,
+            pro=True,
             modelo=info.modelo,
             serie=info.serie,
             firmware=info.firmware,

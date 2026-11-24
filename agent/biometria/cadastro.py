@@ -3,7 +3,15 @@
     iniciar → verificar → captura ×3 → concluir     (ou descartar)
 
 - **verificar**: uma identificação 1:N no leitor; o SERVIDOR decide se o dedo
-  já é de outra pessoa (``recusado``) ou se está livre (``verificado``).
+  já é de outra pessoa (``recusado``) ou se está livre (``verificado``). Antes,
+  as digitais que a pessoa já tem (``alvo_digitais`` do desafio) são gravadas
+  na memória, como no ``identificar``: com o espelho incompleto o mesmo dedo
+  passaria como "livre" e viraria um segundo dedo dela.
+- **prazo**: relógio monotônico do agente — 120 s depois do ``iniciar``,
+  renovado para 300 s na verificação "livre" (o servidor estende o desafio
+  para +5 min ali) e a cada leitura aceita. O ``expira_em`` do servidor não
+  entra na conta: o relógio do PC pode estar errado, e quem recusa um desafio
+  vencido é o servidor.
 - **captura**: três leituras com qualidade ≥ 50; a prévia é uma PNG de até
   96 px, levemente desfocada (serve para a pessoa ver que leu, não para
   reconstruir a digital).
@@ -27,12 +35,11 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
 
 from ..remote_client import RemoteError, ServidorRecusou
-from .cliente import uuid_canonico
+from .cliente import digitais_validas, uuid_canonico
 from .erros import (
     CAPTURA_SEM_DEDO,
     ID_INEXISTENTE,
@@ -57,8 +64,11 @@ CAPTURAS = 3
 QUALIDADE_MINIMA = 50
 PREVIA_MAX_PX = 96
 PREVIA_DESFOQUE = 0.8
+#: Prazo da sessão depois do ``iniciar`` (o desafio de cadastro vale 120 s).
 TTL_PADRAO_S = 120.0
-TTL_MIN_S, TTL_MAX_S = 30.0, 600.0
+#: Depois da verificação "livre" (o servidor estende o desafio para +5 min)
+#: e de cada leitura aceita.
+TTL_VERIFICADA_S = 300.0
 MAX_SESSOES = 4
 #: Depois de concluir, a sessão fica um pouco para responder a um "concluir"
 #: repetido (a resposta pode ter se perdido no navegador).
@@ -85,19 +95,6 @@ def previa_png(imagem: bytes, largura: int, altura: int, *, max_px: int = PREVIA
         return None
 
 
-def _ttl(expira_em: object) -> float:
-    if isinstance(expira_em, str) and expira_em.strip():
-        try:
-            fim = datetime.fromisoformat(expira_em.strip().replace("Z", "+00:00"))
-            if fim.tzinfo is None:
-                fim = fim.replace(tzinfo=timezone.utc)
-            restante = (fim - datetime.now(timezone.utc)).total_seconds()
-            return min(max(restante, TTL_MIN_S), TTL_MAX_S)
-        except ValueError:
-            pass
-    return TTL_PADRAO_S
-
-
 @dataclass(eq=False)
 class Sessao:
     id: str
@@ -105,8 +102,12 @@ class Sessao:
     digital_id: str
     device_id: int
     nome: str
+    #: Instante (relógio monotônico do agente) em que a sessão vence.
     expira_em: float
     verificado: bool = False
+    #: Digitais que a pessoa já tem (``alvo_digitais`` do desafio): vão para a
+    #: memória do leitor antes da verificação.
+    alvo_digitais: list[tuple[int, str]] = field(default_factory=list, repr=False)
     #: Recadastro do mesmo dedo: id antigo que a verificação achou (o servidor
     #: disse que é a mesma pessoa) — sai do leitor se o novo esbarrar nele.
     mesma_pessoa_id: int | None = None
@@ -121,6 +122,11 @@ class Sessao:
     def limpar_templates(self) -> None:
         self.templates.clear()
         self.mesclado = None
+        self.alvo_digitais = []
+
+    def renovar(self, agora: float, segundos: float) -> None:
+        """Estende o prazo (nunca encurta)."""
+        self.expira_em = max(self.expira_em, agora + segundos)
 
 
 class Cadastros:
@@ -165,14 +171,14 @@ class Cadastros:
                 codigo="biometria_desafio_invalido",
             )
         alvo = desafio.get("alvo") if isinstance(desafio.get("alvo"), dict) else {}
-        ttl = _ttl(desafio.get("expira_em"))
         sessao = Sessao(
             id=secrets.token_urlsafe(16),
             desafio_id=uuid_canonico(desafio_id),
             digital_id=digital_id,
             device_id=device_id,
             nome=str(alvo.get("nome") or ""),
-            expira_em=self._relogio() + ttl,
+            expira_em=self._relogio() + TTL_PADRAO_S,
+            alvo_digitais=digitais_validas(desafio.get("alvo_digitais")),
         )
         with self._lock:
             self._purgar()
@@ -180,7 +186,7 @@ class Cadastros:
                 mais_velha = min(self._sessoes.values(), key=lambda s: s.expira_em)
                 self._tirar(mais_velha)
             self._sessoes[sessao.id] = sessao
-        return {"sessao_id": sessao.id, "passos": PASSOS, "expira_em_s": int(ttl)}
+        return {"sessao_id": sessao.id, "passos": PASSOS, "expira_em_s": int(TTL_PADRAO_S)}
 
     def descartar(self, sessao_id: str) -> dict:
         with self._lock:
@@ -270,7 +276,9 @@ class Cadastros:
 
             def tarefa(sdk: Any, ctx: Any) -> Any:
                 self._ao_abrir(sdk)
-                return ctx.capturar(sdk.identificar)
+                if s.alvo_digitais:
+                    self._espelho.garantir(sdk, s.alvo_digitais)
+                return ctx.identificar(sdk)
 
             try:
                 ident = self._leitor.executar(
@@ -308,6 +316,7 @@ class Cadastros:
             if status == "pendente" and resp.get("verificado") is True:
                 s.verificado = True
                 s.mesma_pessoa_id = ident.device_id if ident else None
+                s.renovar(self._relogio(), TTL_VERIFICADA_S)
                 return {"status": "livre"}
             raise ErroBiometria(
                 "servidor_recusou",
@@ -365,6 +374,7 @@ class Cadastros:
                 }
             s.templates.append(cap.template)
             s.qualidades.append(cap.qualidade)
+            s.renovar(self._relogio(), TTL_VERIFICADA_S)
             return {
                 "aceita": True,
                 "passo": feitas + 1,
@@ -412,7 +422,7 @@ class Cadastros:
                 "gravada_no_leitor": s.gravada_no_leitor,
             }
             s.limpar_templates()
-            s.expira_em = max(s.expira_em, self._relogio() + GUARDA_CONCLUIDA_S)
+            s.renovar(self._relogio(), GUARDA_CONCLUIDA_S)
             log.info("Digital cadastrada (gravada no leitor: %s)", s.gravada_no_leitor)
             return dict(s.resposta)
 

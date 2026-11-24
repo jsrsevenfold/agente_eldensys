@@ -91,6 +91,16 @@ def test_primeira_carga_grava_usuarios_e_clientes(mundo):
     assert esperar(lambda: not fake.iniciado)
 
 
+def test_carga_anota_o_leitor_pro_conectado(mundo):
+    """``GetTemplateIDs`` respondeu: só o iDBio Pro responde (o comum dá -16).
+    Sem isto o status e o heartbeat ficavam com ``pro`` desconhecido."""
+    fake, servidor, esp, _, _ = mundo
+    servidor.vivas({U1: tpl(1)})
+    esp.sincronizar_agora()
+    f = esp._leitor.fatos()
+    assert (f.conectado, f.pro, f.digitais) == (True, True, 1)
+
+
 def test_so_as_lapides_saem_e_o_desconhecido_fica(mundo):
     """X pode ser uma digital que o PDV cadastrou sem rede: não é apagada."""
     fake, servidor, esp, _, _ = mundo
@@ -220,7 +230,41 @@ def test_arquivo_de_estado_nao_tem_template_nem_ids(mundo):
         "completo",
         "faltando",
         "sincronizado_em",
+        # Último agente visto no poll (o status usa enquanto não houver poll).
+        "agent_id",
+        "loja",
+        "pareamento",
     }
+
+
+def test_agente_do_poll_fica_no_estado_sem_atrapalhar_o_espelho(mundo, monkeypatch):
+    fake, servidor, esp, estado, caminho = mundo
+    gravacoes = []
+    original = espelho_mod.gravar_estado
+
+    def contar(c, e):
+        gravacoes.append(e)
+        original(c, e)
+
+    monkeypatch.setattr(espelho_mod, "gravar_estado", contar)
+    esp.guardar_agente("ag-1", "Loja Centro", "p1")
+    esp.guardar_agente("ag-1", "Loja Centro", "p1")  # poll a cada poucos segundos: não regrava
+    assert len(gravacoes) == 1
+    servidor.vivas({U1: tpl(1)})
+    esp.sincronizar_agora()  # a carga reescreve o arquivo sem perder o agente
+    salvo = json.loads(caminho.read_text(encoding="utf-8"))
+    assert (salvo["agent_id"], salvo["loja"], salvo["pareamento"]) == ("ag-1", "Loja Centro", "p1")
+    assert salvo["versao"] == servidor.versao
+    # Processo novo: vale o que está no disco, e só para o mesmo pareamento.
+    novo = Espelho(
+        leitor=esp._leitor,
+        cliente_fn=lambda cfg: servidor,
+        load_config_fn=lambda: estado["cfg"],
+        caminho_estado=caminho,
+    )
+    assert novo.agente_salvo("p1") == ("ag-1", "Loja Centro")
+    assert novo.agente_salvo("p2") is None
+    assert novo.estado()["versao"] == servidor.versao
 
 
 def test_estado_corrompido_vale_como_vazio(tmp_path):

@@ -17,6 +17,7 @@ Tudo começa preguiçosamente no primeiro uso.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -59,6 +60,19 @@ CAPACIDADE_PADRAO = 3000
 
 def biometria_ligada(cfg: AgentConfig) -> bool:
     return getattr(cfg, "biometria_habilitada", True) is True and agente_em_loopback(cfg)
+
+
+def impressao_do_pareamento(cfg: AgentConfig) -> str:
+    """Marca do pareamento atual para o ``biometria.json``, sem o token.
+
+    O ``agent_id`` salvo só vale para o MESMO código de pareamento: cada
+    código é um agente no EldenSys (o token é a chave dele), então outro
+    código colado — mesmo da mesma loja e sem internet — não herda o id
+    antigo. 16 hexadecimais de um SHA-256 não devolvem o token (que já mora
+    no config.json, na mesma pasta).
+    """
+    bruto = "\n".join((cfg.server_url, cfg.server_tenant, cfg.server_token))
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:16]
 
 
 def _status_remoto_padrao() -> Any:
@@ -213,6 +227,12 @@ class ServicoBiometria:
         with self._lock:
             agent_id, loja, liberado = self._agent_id, self._loja, self._liberado
         pareado = is_paired(cfg)
+        if pareado and agent_id is None:
+            # Ainda sem poll neste processo (sem internet ao ligar, ou o canal
+            # em espera): vale o agente do último poll, se for deste pareamento.
+            salvo = self.espelho.agente_salvo(impressao_do_pareamento(cfg))
+            if salvo is not None:
+                agent_id, loja = salvo[0], loja or salvo[1]
         return {
             "versao_agente": __version__,
             "sdk": {
@@ -264,31 +284,41 @@ class ServicoBiometria:
 
     # ── poll ──────────────────────────────────────────
     def ao_poll(self, resp: dict) -> None:
-        """Lê ``biometria{habilitado, versao}`` da resposta do poll."""
+        """Lê ``agent``, ``store_name`` e ``biometria{habilitado, versao}`` do poll."""
         agent = resp.get("agent") if isinstance(resp.get("agent"), dict) else {}
         bio = resp.get("biometria")
+        agent_id = str(agent.get("id") or "") or None
+        loja = str(resp.get("store_name") or "")
         with self._lock:
-            self._agent_id = str(agent.get("id") or "") or None
-            self._loja = str(resp.get("store_name") or "")
-            if not isinstance(bio, dict):
+            self._agent_id, self._loja = agent_id, loja
+            if isinstance(bio, dict):
+                self._modulo = True
+                self._liberado = bio.get("habilitado") is True
+                versao = bio.get("versao")
+                self._versao_servidor = versao if isinstance(versao, str) else None
+            else:
                 # Chave ausente = módulo desligado na loja (contrato).
                 self._modulo, self._liberado, self._versao_servidor = False, None, None
-                return
-            self._modulo = True
-            self._liberado = bio.get("habilitado") is True
-            versao = bio.get("versao")
-            self._versao_servidor = versao if isinstance(versao, str) else None
-            liberado, versao, sondar = self._liberado, self._versao_servidor, not self._sondado
+            modulo, liberado, versao = self._modulo, self._liberado, self._versao_servidor
         cfg = self._load_config()
-        if not biometria_ligada(cfg) or not self._dll_presente():
+        if not biometria_ligada(cfg):
             return
+        if agent_id and is_paired(cfg):
+            # Grava só quando muda; o status usa no próximo início sem internet.
+            self.espelho.guardar_agente(agent_id, loja, impressao_do_pareamento(cfg))
+        if not modulo or not self._dll_presente():
+            return
+        # Uma sondagem por processo, liberado ou não: com o espelho em dia
+        # (versão do poll = a do disco) nada mais tocaria no leitor e o status
+        # e o heartbeat ficariam "leitor não encontrado" até alguém usá-lo.
+        self.sondar()
         if liberado:
             self.espelho.ao_poll(versao)
-        elif sondar:
-            self.sondar()
 
     def sondar(self) -> None:
-        """Uma leitura de fundo (info + ids) para o heartbeat mostrar o leitor."""
+        """Uma leitura de fundo (info + ids), uma vez por processo, para o status
+        e o heartbeat mostrarem o leitor. Tarefa de fundo: o leitor é devolvido
+        logo em seguida (o PDV no mesmo PC usa o mesmo leitor)."""
         with self._lock:
             if self._sondado:
                 return
@@ -363,7 +393,7 @@ class ServicoBiometria:
             self._info_se_preciso(sdk)
             if alvo:
                 self.espelho.garantir(sdk, alvo)
-            return ctx.capturar(sdk.identificar)
+            return ctx.identificar(sdk)
 
         try:
             ident = self.leitor.executar(
@@ -399,7 +429,7 @@ class ServicoBiometria:
 
         def tarefa(sdk: Any, ctx: Any) -> Any:
             self._info_se_preciso(sdk)
-            return ctx.capturar(sdk.identificar)
+            return ctx.identificar(sdk)
 
         ident = self.leitor.executar(
             tarefa, usuario=True, nome="login", captura=True, cancelamento=cancelamento

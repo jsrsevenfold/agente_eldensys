@@ -136,7 +136,9 @@ Retaguarda (navegador) ──1. cria o desafio──▶ Backend EldenSys
   excluídas (lápides) são apagadas: um id desconhecido — por exemplo, uma
   digital que o PDV cadastrou sem rede — só sai com a memória cheia ou quando
   o leitor veio de outra loja ou é outro aparelho. O estado fica em
-  `%APPDATA%\EldenSysAgent\biometria.json`, sem nenhuma digital.
+  `%APPDATA%\EldenSysAgent\biometria.json`, sem nenhuma digital (guarda também
+  o último agente e a loja vistos no poll, para o status valer antes do
+  primeiro poll quando o agente liga sem internet).
 - **Leitor dividido com o PDV offline.** O PDV no mesmo computador usa o
   mesmo leitor: o agente só o abre quando precisa e o devolve
   `biometria_ocioso_s` (20 s) depois de uma operação do usuário — o cadastro

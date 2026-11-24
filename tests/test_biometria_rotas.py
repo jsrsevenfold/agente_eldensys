@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
+import logging
 import sys
 import threading
 import time
@@ -26,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agent import __version__  # noqa: E402
 from agent.biometria import espelho as espelho_mod  # noqa: E402
 from agent.biometria import rotas  # noqa: E402
-from agent.biometria.sdk import Captura, device_id_de  # noqa: E402
+from agent.biometria.sdk import Captura, Identificacao, device_id_de  # noqa: E402
 from agent.biometria.servico import ServicoBiometria  # noqa: E402
 from agent.config import AgentConfig  # noqa: E402
 from agent.remote_client import ServidorRecusou, TransportError  # noqa: E402
@@ -142,6 +144,15 @@ def esperar(cond, timeout=3.0):
             return True
         time.sleep(0.005)
     return cond()
+
+
+def resposta_poll(*, habilitado=True, versao="0:2026-11-24T10:00:00+00:00"):
+    """Poll com o módulo ligado (a chave ``biometria`` só vem assim)."""
+    return {
+        "agent": {"id": "ag-1", "name": "Caixa 2"},
+        "store_name": "Loja Centro",
+        "biometria": {"habilitado": habilitado, "versao": versao},
+    }
 
 
 def desafio(did, finalidade, **extra):
@@ -363,6 +374,83 @@ def test_status_nao_pareado(m):
     assert corpo["pareamento"]["tenant"] is None
 
 
+@pytest.mark.parametrize("liberado", [True, False], ids=["pc_liberado", "pc_nao_liberado"])
+def test_primeiro_poll_sonda_o_leitor_uma_vez_e_devolve_na_hora(m, tmp_path, liberado):
+    """Agente reiniciado com o espelho em dia (versão do poll = a do disco):
+    ninguém mais tocaria no leitor, o status diria ``conectado: false`` e
+    ``pro: null`` (a web esconde a biometria) e o heartbeat ``ok: false``."""
+    versao = m.servidor.versao
+    (tmp_path / "biometria.json").write_text(
+        json.dumps(
+            {
+                "versao": versao,
+                "tenant": m.cfg.server_tenant,
+                "api": m.cfg.server_url,
+                "serie": "SN-0001",
+                "completo": True,
+                "faltando": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    m.fake.memoria.update({U1: tpl(1), OUTRA: tpl(7)})
+    leitor = m.chamar("GET", "/biometria/status").json()["leitor"]
+    assert (leitor["conectado"], leitor["pro"]) == (False, None)
+
+    m.servico.ao_poll(resposta_poll(habilitado=liberado, versao=versao))
+    assert esperar(lambda: m.servico.capacidades()["ok"] is True)
+    leitor = m.chamar("GET", "/biometria/status").json()["leitor"]
+    assert (leitor["conectado"], leitor["pro"], leitor["digitais"]) == (True, True, 2)
+    assert leitor["serie"] == "SN-0001"
+    # Tarefa de fundo: o leitor volta na hora para o PDV do mesmo computador.
+    assert esperar(lambda: not m.fake.iniciado)
+    # Espelho em dia: nada foi baixado do servidor.
+    assert m.servidor.chamadas == []
+    # Uma vez por processo: os polls seguintes não abrem o leitor de novo.
+    inits = m.fake.inits
+    m.servico.ao_poll(resposta_poll(habilitado=liberado, versao=versao))
+    time.sleep(0.05)
+    assert m.fake.inits == inits
+
+
+def test_agente_do_ultimo_poll_vale_ate_o_proximo(m, tmp_path):
+    """Sem internet ao ligar não há poll: o status ainda informa este agente
+    (a web precisa do ``agent_id`` para pedir a digital) — mas só para o
+    mesmo pareamento."""
+    m.servidor.vivas({U1: tpl(1)})
+    m.servico.ao_poll(resposta_poll(versao=m.servidor.versao))
+    assert esperar(
+        lambda: m.servico.espelho.estado()["versao"] == m.servidor.versao
+        and not m.servico.espelho.estado()["em_andamento"]
+    )
+    texto = (tmp_path / "biometria.json").read_text(encoding="utf-8")
+    salvo = json.loads(texto)
+    # A carga do espelho (que terminou depois do poll) não apagou o agente.
+    assert (salvo["agent_id"], salvo["loja"], salvo["versao"]) == (
+        "ag-1",
+        "Loja Centro",
+        m.servidor.versao,
+    )
+    assert TOKEN not in texto and INSTANCIA not in texto and tpl(1) not in texto
+
+    depois = Mundo(tmp_path)  # agente reiniciado, ainda sem poll (sem internet)
+    depois.remoto = RemoteStatus(state="error", message="Sem conexão com o EldenSys.")
+    try:
+        pareamento = depois.chamar("GET", "/biometria/status").json()["pareamento"]
+        assert (pareamento["agent_id"], pareamento["loja"]) == ("ag-1", "Loja Centro")
+        # Colaram outro código de pareamento: o agente salvo é de outro pareamento.
+        depois.cfg.server_token = "esa_" + "t" * 43
+        pareamento = depois.chamar("GET", "/biometria/status").json()["pareamento"]
+        assert (pareamento["agent_id"], pareamento["loja"]) == (None, None)
+        # O poll seguinte manda.
+        depois.cfg.server_token = TOKEN
+        depois.servico.ao_poll({**resposta_poll(), "agent": {"id": "ag-2", "name": "Caixa 2"}})
+        pareamento = depois.chamar("GET", "/biometria/status").json()["pareamento"]
+        assert pareamento["agent_id"] == "ag-2"
+    finally:
+        depois.servico.parar()
+
+
 # ── conferências baratas (sem tocar no SDK) ──────────────────────────────
 PEDE_LOJA = [r for r in ROTAS if r[1] not in ("/biometria/status", "/biometria/testar", "/biometria/cancelar")]
 PEDE_LOJA = [r for r in PEDE_LOJA if not r[1].endswith("/descartar")]
@@ -507,6 +595,46 @@ def test_identificar_cliente_garante_as_digitais_dele_antes(m):
     assert r.json()["status"] == "aprovado"
     assert m.fake.memoria == {41: tpl(41)}
     assert m.servidor.resultados[0]["device_id"] == 41
+
+
+@pytest.mark.parametrize("dedo", [tpl(1), tpl(99)], ids=["reconhecido", "desconhecido"])
+def test_identificar_anota_leitor_conectado_e_pro_mesmo_sem_sondagem(m, dedo):
+    """Sem internet ao ligar não há poll nem sondagem: a primeira
+    identificação, achando alguém ou não, já prova o iDBio Pro conectado."""
+    m.fake.memoria[U1] = tpl(1)
+    m.fake.dedo = dedo
+    m.servidor.desafios[DESAFIO_SUP] = desafio(DESAFIO_SUP, "supervisor")
+    # Na leitura anterior o cabo saiu (-2): desconectado, com o erro anotado.
+    m.fake.identificacoes.append(-2)
+    r = m.post("/biometria/identificar", {"desafio_id": DESAFIO_SUP})
+    assert (r.status_code, r.json()["erro"]) == (503, "leitor_desconectado")
+    leitor = m.chamar("GET", "/biometria/status").json()["leitor"]
+    assert leitor["conectado"] is False and "cabo USB" in leitor["erro"]
+    # Cabo de volta: a identificação respondeu (achando ou não).
+    assert m.post("/biometria/identificar", {"desafio_id": DESAFIO_SUP}).status_code == 200
+    leitor = m.chamar("GET", "/biometria/status").json()["leitor"]
+    assert (leitor["conectado"], leitor["pro"], leitor["erro"]) == (True, True, None)
+    assert m.servico.capacidades()["ok"] is True
+
+
+@pytest.mark.parametrize("estranho", [0, -5, 2**60, 2**62])
+def test_id_de_outro_sistema_vale_como_nao_identificado(m, estranho, caplog):
+    """Leitor que veio de outro sistema: o id que ele devolve não é de digital
+    da loja (0 < id < 2**60) e o servidor responderia 400 "Id da digital
+    inválido". Vale como "não reconhecida" e fica no log."""
+    m.servidor.desafios[DESAFIO_SUP] = desafio(DESAFIO_SUP, "supervisor")
+    m.fake.identificacoes.append(Identificacao(estranho, 9000, 80))
+    with caplog.at_level(logging.WARNING):
+        r = m.post("/biometria/identificar", {"desafio_id": DESAFIO_SUP})
+    assert r.json()["status"] == "recusado"
+    enviado = m.servidor.resultados[0]
+    assert (enviado["device_id"], enviado["erro"]) == (None, "nao_identificado")
+    assert "outro sistema" in caplog.text
+    # Login pela digital: a mesma regra (422 nao_identificado, sem chamar o servidor).
+    m.fake.identificacoes.append(Identificacao(estranho, 9000, 80))
+    r = m.post("/biometria/login", {"challenge": CHALLENGE})
+    assert (r.status_code, r.json()["erro"]) == (422, "nao_identificado")
+    assert m.servidor.logins == []
 
 
 def test_desafio_ja_usado_nao_abre_o_leitor(m):
@@ -854,3 +982,85 @@ def test_sessao_inexistente_e_404(m, passo):
     assert (r.status_code, r.json()["erro"]) == (404, "sessao_inexistente")
     r = m.post(f"/biometria/cadastro/x/{passo}")
     assert r.status_code == 404
+
+
+def relogio_do_cadastro(m) -> list[float]:
+    """Relógio monotônico de mentira para as sessões de cadastro."""
+    agora = [5000.0]
+    m.servico.cadastros._relogio = lambda: agora[0]
+    return agora
+
+
+@pytest.mark.parametrize(
+    "pc_adiantado",
+    [timedelta(minutes=8), timedelta(hours=-1)],
+    ids=["relogio_do_pc_adiantado", "relogio_do_pc_atrasado"],
+)
+def test_prazo_do_cadastro_nao_depende_do_relogio_do_pc(m, pc_adiantado):
+    """O ``expira_em`` absoluto do servidor contra o relógio de parede do PC
+    dava 30 s (PC adiantado) ou 600 s (atrasado). O prazo local é 120 s pelo
+    relógio monotônico; quem recusa de fato é o servidor."""
+    agora = relogio_do_cadastro(m)
+    expira_no_pc = datetime.now(timezone.utc) + timedelta(seconds=120) - pc_adiantado
+    sessao = preparar_cadastro(m, expira_em=expira_no_pc.isoformat())
+    agora[0] += 119
+    verificar_livre(m, sessao)
+
+
+def test_sem_atividade_a_sessao_de_cadastro_vence(m):
+    agora = relogio_do_cadastro(m)
+    sessao = preparar_cadastro(m)
+    agora[0] += 121
+    r = m.post(f"/biometria/cadastro/{sessao}/verificar")
+    assert (r.status_code, r.json()["erro"]) == (404, "sessao_inexistente")
+    sessao = preparar_cadastro(m)
+    verificar_livre(m, sessao)
+    agora[0] += 301
+    r = m.post(f"/biometria/cadastro/{sessao}/captura")
+    assert (r.status_code, r.json()["erro"]) == (404, "sessao_inexistente")
+
+
+def test_verificacao_livre_e_leituras_aceitas_renovam_o_prazo(m):
+    """O servidor estende o desafio para +5 min quando a verificação dá
+    "livre"; o agente renova a sessão para 300 s ali e a cada leitura aceita."""
+    agora = relogio_do_cadastro(m)
+    sessao = preparar_cadastro(m)
+    agora[0] += 110
+    verificar_livre(m, sessao)
+    for passo in (1, 2, 3):
+        agora[0] += 290  # já passou dos 120 s do iniciar; dentro dos 300 s da renovação
+        r = m.post(f"/biometria/cadastro/{sessao}/captura")
+        assert r.status_code == 200, r.text
+        assert (r.json()["aceita"], r.json()["passo"]) == (True, passo)
+    agora[0] += 290
+    assert m.post(f"/biometria/cadastro/{sessao}/concluir").json()["status"] == "aprovado"
+
+
+def test_verificacao_do_cadastro_garante_as_digitais_da_pessoa_antes(m):
+    """Espelho incompleto (memória cheia): a digital que a Ana já tem não está
+    no leitor. Sem gravá-la antes, o mesmo dedo passaria como "livre" e seria
+    cadastrado de novo como outro dedo dela."""
+    antiga = device_id_de("55555555-5555-4555-8555-555555555555")
+    estranha = 1003
+    sessao = preparar_cadastro(m, alvo_digitais=[{"device_id": antiga, "template": tpl(5)}])
+    m.fake.capacidade = 1
+    m.fake.memoria[estranha] = tpl(8)  # id que a loja não conhece ocupando a memória
+    m.fake.dedo = tpl(5)
+    m.servidor.veredito = lambda device_id: (
+        {"status": "recusado", "motivo": "Este dedo já está cadastrado para Ana", "nome": "Ana"}
+        if device_id == antiga
+        else {"status": "pendente", "motivo": "", "verificado": True}
+    )
+    r = m.post(f"/biometria/cadastro/{sessao}/verificar")
+    assert r.json()["status"] == "duplicada"
+    assert m.servidor.resultados[-1]["device_id"] == antiga
+    assert m.fake.memoria == {antiga: tpl(5)}
+
+
+def test_verificacao_do_cadastro_com_id_de_outro_sistema_vale_como_nao_identificado(m):
+    sessao = preparar_cadastro(m)
+    m.fake.identificacoes.append(Identificacao(2**61, 9000, 80))
+    m.servidor.veredito = {"status": "pendente", "motivo": "", "verificado": True}
+    assert m.post(f"/biometria/cadastro/{sessao}/verificar").json() == {"status": "livre"}
+    enviado = m.servidor.resultados[-1]
+    assert (enviado["device_id"], enviado["erro"]) == (None, "nao_identificado")

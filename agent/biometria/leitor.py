@@ -15,8 +15,11 @@ UMA thread ("biometria-leitor"), que atende uma fila de prioridade:
 - **cancelar de fora.** ``CancelCapture`` é a única função chamada de outra
   thread (o SDK prevê isso); é repetida algumas vezes porque o pedido pode
   chegar um instante antes de a captura começar a esperar o dedo.
-- **leitor arrancado.** -2 e -7 fecham o leitor (``Terminate``) e a próxima
-  operação reabre.
+- **leitor arrancado.** -2 e -7 fecham o leitor (``Terminate``), anotam
+  ``conectado=False`` e a próxima operação reabre.
+- **fatos sem sondar.** O status e o heartbeat não tocam no leitor: leem o
+  que as operações provaram. Uma identificação que respondeu (achando ou não)
+  prova o iDBio Pro conectado (``Contexto.identificar``).
 - **vigia.** Uma chamada que passa muito do prazo marca ``travado``: a thread
   está presa na DLL e nada mais é aceito até ela voltar (aí o leitor é
   fechado e reaberto).
@@ -50,6 +53,7 @@ from .erros import (
     LeitorTravado,
     SdkIndisponivel,
 )
+from .sdk import id_da_loja_valido
 
 log = logging.getLogger("eldensys.agent.biometria.leitor")
 
@@ -155,6 +159,35 @@ class Contexto:
         finally:
             with leitor._lock:
                 leitor._em_captura = False
+
+    def identificar(self, sdk: Any) -> Any:
+        """``CaptureAndIdentify`` como as operações usam (identificar, login,
+        verificação do cadastro).
+
+        - Respondeu, achando alguém ou não (-18), só um iDBio Pro conectado
+          responde: anota ``conectado`` e ``pro``. Sem isso, um agente que
+          reiniciou sem sondar o leitor seguiria "leitor não encontrado" na web.
+        - Id fora da faixa da loja (``0 < id < 2**60``) foi gravado por outro
+          sistema (o leitor veio de outro lugar): vale como "não reconhecida",
+          porque o servidor recusaria o id com 400.
+        """
+        try:
+            ident = self.capturar(sdk.identificar)
+        except ErroLeitor as e:
+            if e.codigo == NAO_IDENTIFICADO:
+                # Termina em exceção: o "deu certo" do _rodar não roda, então o
+                # erro antigo (ex.: cabo USB) sai aqui.
+                self._leitor.anotar(conectado=True, pro=True, erro=None)
+            raise
+        self._leitor.anotar(conectado=True, pro=True, erro=None)
+        if not id_da_loja_valido(ident.device_id):
+            log.warning(
+                "O leitor reconheceu a digital de id %s, fora da faixa das digitais da "
+                "loja (gravada por outro sistema): tratada como não reconhecida",
+                ident.device_id,
+            )
+            raise ErroLeitor(NAO_IDENTIFICADO, "CaptureAndIdentify: id de outro sistema")
+        return ident
 
 
 class Leitor:

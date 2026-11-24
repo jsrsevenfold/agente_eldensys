@@ -255,8 +255,8 @@ def test_leitor_arrancado_fecha_e_reabre_na_proxima(leitor, fake, codigo):
     assert exc.value.status == 503
     assert not leitor.aberto
     assert fake.terminates == 1
-    if codigo == -2:
-        assert leitor.fatos().conectado is False
+    # O status e o heartbeat param de mostrar o leitor pronto (-2 e -7).
+    assert leitor.fatos().conectado is False
     leitor.executar(lambda s, c: s.ids(), usuario=True, nome="c")
     assert fake.inits == 2
     assert leitor.fatos().conectado is True
