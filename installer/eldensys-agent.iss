@@ -2,7 +2,7 @@
 ; Compile with Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
 
 #define MyAppName "EldenSys Agent"
-#define MyAppVersion "0.5.0"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "EldenSys"
 #define MyAppURL "https://eldensys.com.br"
 #define MyAppExeName "EldenSysAgent.exe"
@@ -24,7 +24,10 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\{#MyAppExeName}
-ArchitecturesInstallIn64BitMode=x64
+; v0.6: o pacote leva a DLL x64 do leitor biometrico (libcidbio.dll) e o
+; Python embutido e 64 bits. Windows 32 bits nao instala (Inno Setup 6.3+).
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ; O agente roda na bandeja. Sem o mutex, atualizar por cima falha com
 ; "arquivo em uso" e o lojista nao sabe que precisa fechar o icone.
 AppMutex=Local\EldenSysAgent_SingleInstance_v1

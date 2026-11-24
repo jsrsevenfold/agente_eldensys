@@ -115,11 +115,18 @@ class RemoteJobsWorker:
         client_factory: Callable[[AgentConfig], Any] | None = None,
         print_pdf_fn: Callable[..., None] = print_pdf,
         list_printers_fn: Callable[[], list] = list_printers,
+        capacidades_biometria_fn: Callable[[], dict] | None = None,
+        ao_poll_fn: Callable[[dict], None] | None = None,
     ) -> None:
         self._load_config = load_config_fn
         self._client_factory = client_factory or self._default_client
         self._print_pdf = print_pdf_fn
         self._list_printers = list_printers_fn
+        #: v0.6: bloco `capabilities.biometria` do heartbeat e leitura do
+        #: `biometria{habilitado, versao}` da resposta. Sem as duas funções o
+        #: heartbeat fica idêntico ao da v0.5.
+        self._capacidades_biometria = capacidades_biometria_fn
+        self._ao_poll = ao_poll_fn
 
         self._status = RemoteStatus()
         self._status_lock = threading.Lock()
@@ -238,6 +245,11 @@ class RemoteJobsWorker:
             agent_name=str(agent_info.get("name") or ""),
             last_ok=time.time(),
         )
+        if self._ao_poll is not None:
+            try:
+                self._ao_poll(resp)
+            except Exception:  # a biometria nunca derruba o canal remoto
+                log.exception("Falha ao tratar a biometria na resposta do poll")
 
         jobs = resp.get("jobs")
         for job in jobs if isinstance(jobs, list) else []:
@@ -254,6 +266,18 @@ class RemoteJobsWorker:
 
     # ── capacidades (vão no heartbeat) ────────────────
     def _capabilities(self, cfg: AgentConfig) -> dict:
+        caps = self._capabilities_locais(cfg)
+        if self._capacidades_biometria is None:
+            return caps
+        try:
+            bio = self._capacidades_biometria()
+        except Exception:
+            log.exception("Falha ao montar as capacidades da biometria")
+            return caps
+        # Cópia: o dicionário em cache (balança/etiqueta) não ganha a chave.
+        return {**caps, "biometria": bio} if isinstance(bio, dict) else caps
+
+    def _capabilities_locais(self, cfg: AgentConfig) -> dict:
         folder = (cfg.scale_dir or "").strip()
         printer = (cfg.remote_label_printer or "").strip()
         key = (folder, printer)

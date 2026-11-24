@@ -70,6 +70,56 @@ def test_config_da_v04_ganha_os_campos_novos_sem_perder_os_antigos(cfg_path):
     assert gravado["instance_id"] == cfg.instance_id != ""
 
 
+CAMPOS_BIOMETRIA = {
+    "biometria_habilitada": True,
+    "biometria_permitir_dev": False,
+    "biometria_previa": True,
+    "biometria_origens_extras": [],
+    "biometria_ocioso_s": 20.0,
+}
+
+
+def test_config_da_v05_ganha_os_campos_da_biometria_sem_perder_o_pareamento(cfg_path):
+    v05 = {
+        "host": "127.0.0.1",
+        "port": 17777,
+        "allowed_origins": ["*"],
+        "allowed_origin_regex": "",
+        "log_level": "INFO",
+        "sumatra_path": "",
+        "sumatra_label_disable_antialias": True,
+        "scale_dir": "C:\\Toledo\\Carga",
+        "remote_label_printer": "Argox OS-214",
+        "server_url": "https://api.eldensys.com.br/api",
+        "server_tenant": "loja_centro",
+        "server_token": "esa_segredo",
+        "instance_id": "a" * 32,
+    }
+    cfg_path.write_text(json.dumps(v05), encoding="utf-8")
+    cfg = load_config()
+    assert is_paired(cfg)
+    assert (cfg.server_token, cfg.instance_id, cfg.scale_dir) == (
+        "esa_segredo",
+        "a" * 32,
+        "C:\\Toledo\\Carga",
+    )
+    for campo, padrao in CAMPOS_BIOMETRIA.items():
+        assert getattr(cfg, campo) == padrao
+    gravado = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert {k: gravado[k] for k in CAMPOS_BIOMETRIA} == CAMPOS_BIOMETRIA
+    assert {k: gravado[k] for k in v05} == v05
+
+
+def test_campos_da_biometria_sobrevivem_a_salvar_e_carregar(cfg_path):
+    cfg = load_config()
+    cfg.biometria_habilitada = False
+    cfg.biometria_previa = False
+    cfg.biometria_origens_extras = ["https://erp.minhaloja.com.br"]
+    cfg.biometria_ocioso_s = 5.0
+    save_config(cfg)
+    assert load_config() == cfg
+
+
 def test_pareamento_sobrevive_a_salvar_e_carregar(cfg_path):
     cfg = load_config()
     cfg.server_url = "https://api.eldensys.com.br/api"

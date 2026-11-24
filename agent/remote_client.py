@@ -9,10 +9,16 @@ Contrato (o lado servidor mora no app `agents` do EldenSys):
 
     POST {url}/agent/poll/            heartbeat + busca trabalhos
     POST {url}/agent/jobs/<id>/ack/   resultado de um trabalho
+    GET|POST {url}/agent/biometria/…  biometria (v0.6, `negocio=True`)
 
     Authorization: Bearer <token>     segredo do pareamento
     X-Tenant: <schema>                loja
     X-Agent-Instance: <uuid>          esta instalação
+
+Poll e ack tratam os erros HTTP como sempre (`_from_http_error`). As rotas de
+negócio (`negocio=True`) distinguem a recusa do servidor ("desafio expirado",
+"sem vínculo") de pareamento recusado e de loja bloqueada: lá um 404 ou 403
+quase sempre é regra de negócio, não pareamento perdido.
 
 Usa só a biblioteca padrão (`urllib`) de propósito: nenhuma dependência nova
 no instalador, e no Windows o `ssl` já confia na loja de certificados do
@@ -136,6 +142,36 @@ class TransportError(RemoteError):
     """Rede fora, timeout, 5xx, resposta ilegível — tentar de novo com backoff."""
 
 
+class ModuloInativo(RemoteError):
+    """403 com `module`: o módulo (ex.: biometria) não está ligado na loja."""
+
+    def __init__(self, message: str, module: str = "") -> None:
+        super().__init__(message)
+        self.module = module
+
+
+class ServidorRecusou(RemoteError):
+    """Recusa de negócio (`negocio=True`): o pedido chegou e o servidor disse não.
+
+    `code` é o `code` do corpo (`biometria_…`); `detail`, a frase em português
+    para mostrar ao usuário. Repetir o mesmo pedido não muda a resposta.
+    """
+
+    def __init__(self, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.code = code
+        self.detail = detail
+
+
+#: `code` do 404 sem `code` numa rota de negócio: rota inexistente = EldenSys
+#: anterior à biometria (o 404 de rota do Django não é JSON).
+CODE_SEM_BIOMETRIA = "biometria_indisponivel"
+MSG_SEM_BIOMETRIA = (
+    "Este EldenSys ainda não tem a biometria. Atualize o sistema ou fale com o suporte."
+)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Não segue redirecionamento.
 
@@ -157,6 +193,13 @@ def _error_payload(err: urllib.error.HTTPError) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except (ValueError, OSError):
         return {}
+
+
+def _retry_after(err: urllib.error.HTTPError) -> float | None:
+    try:
+        return float(err.headers.get("Retry-After", ""))
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 class RemoteClient:
@@ -198,23 +241,47 @@ class RemoteClient:
 
     # ── transporte ────────────────────────────────────
     def _post(self, path: str, body: dict) -> dict:
-        req = urllib.request.Request(
-            self.url + path,
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "X-Tenant": self.tenant,
-                "X-Agent-Instance": self.instance_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": f"EldenSysAgent/{__version__}",
-            },
-        )
+        return self._request("POST", path, body)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        *,
+        query: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        negocio: bool = False,
+    ) -> dict:
+        """Uma chamada ao EldenSys; devolve o corpo JSON (objeto).
+
+        `query` vai na URL (valores None são omitidos); `timeout` sobrepõe o
+        da instância só nesta chamada; `negocio=True` troca o mapeamento de
+        erros HTTP pelo das rotas de negócio (ver `_from_http_error_negocio`).
+        """
+        url = self.url + path
+        if query:
+            pares = {k: v for k, v in query.items() if v is not None}
+            if pares:
+                url += "?" + urllib.parse.urlencode(pares)
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "X-Tenant": self.tenant,
+            "X-Agent-Instance": self.instance_id,
+            "Accept": "application/json",
+            "User-Agent": f"EldenSysAgent/{__version__}",
+        }
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with self._opener.open(req, timeout=self._timeout) as resp:
+            with self._opener.open(req, timeout=timeout or self._timeout) as resp:
                 raw = resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as e:
+            if negocio:
+                raise self._from_http_error_negocio(e) from e
             raise self._from_http_error(e) from e
         except (urllib.error.URLError, OSError, ValueError) as e:
             # URLError: DNS/conexão/TLS. OSError: timeout e reset no meio da
@@ -244,10 +311,38 @@ class RemoteClient:
         if e.code == 403:
             return StoreBlocked(detail or "Loja bloqueada ou inativa no EldenSys.")
         if e.code == 429:
-            retry_after: float | None = None
-            try:
-                retry_after = float(e.headers.get("Retry-After", ""))
-            except (TypeError, ValueError):
-                pass
-            return RateLimited("EldenSys pediu para aguardar.", retry_after)
+            return RateLimited("EldenSys pediu para aguardar.", _retry_after(e))
         return TransportError(f"EldenSys respondeu {e.code}. {detail}".strip())
+
+    @staticmethod
+    def _from_http_error_negocio(e: urllib.error.HTTPError) -> RemoteError:
+        """Erros das rotas de negócio (biometria).
+
+        401 continua sendo pareamento recusado e 403 `tenant_*` loja bloqueada
+        (vêm do middleware, antes da view). O resto dos 4xx é recusa da regra
+        de negócio: `ServidorRecusou`, sem pedir código de pareamento novo.
+        """
+        payload = _error_payload(e)
+        detail = str(payload.get("detail") or "").strip()
+        code = str(payload.get("code") or "").strip()
+        status = e.code
+        if status == 401:
+            return PairingRejected(
+                detail or "Pareamento recusado pelo EldenSys. Gere um novo código.", code
+            )
+        if status == 403:
+            module = str(payload.get("module") or "").strip()
+            if module:
+                return ModuloInativo(
+                    detail or "Módulo não contratado para este estabelecimento.", module
+                )
+            if code.startswith("tenant_"):
+                return StoreBlocked(detail or "Loja bloqueada ou inativa no EldenSys.")
+            return ServidorRecusou(403, code, detail or "O EldenSys recusou o pedido do agente.")
+        if status == 404 and not code:
+            return ServidorRecusou(404, CODE_SEM_BIOMETRIA, MSG_SEM_BIOMETRIA)
+        if status == 429:
+            return RateLimited("EldenSys pediu para aguardar.", _retry_after(e))
+        if 400 <= status < 500:
+            return ServidorRecusou(status, code, detail or "O EldenSys recusou o pedido do agente.")
+        return TransportError(f"EldenSys respondeu {status}. {detail}".strip())

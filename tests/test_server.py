@@ -38,6 +38,13 @@ def test_health_reporta_versao(client):
     assert r.json()["version"] == __version__
 
 
+def test_health_lista_os_recursos(client):
+    """A web decide o que oferecer (ex.: biometria só com agente >= 0.6.0)."""
+    corpo = client.get("/health").json()
+    assert corpo["recursos"] == ["impressao", "canal_remoto", "biometria"]
+    assert corpo["status"] == "ok"
+
+
 def test_print_pdf_default_sem_render_mode(client, jobs):
     r = client.post("/print/pdf", json={"printer": "X", "pdf_base64": PDF})
     assert r.status_code == 200
@@ -132,7 +139,212 @@ def test_post_config_preserva_o_pareamento_e_nao_o_altera(client, monkeypatch):
         assert getattr(gravado, campo) == valor
 
 
+@pytest.fixture
+def gravados(monkeypatch):
+    """POST /config com config padrão em memória; guarda o que seria salvo."""
+    salvos: list = []
+    estado = {"cfg": AgentConfig()}
+    monkeypatch.setattr(server, "save_config", lambda c: salvos.append(c))
+    monkeypatch.setattr(server, "load_config", lambda: estado["cfg"])
+    return salvos, estado
+
+
+@pytest.mark.parametrize(
+    "origem",
+    [
+        "https://site-malicioso.example",
+        "null",
+        "",
+        "http://eldensys.hubdesktop.com.br",  # sem TLS
+        "https://eldensys.hubdesktop.com.br.evil.com",
+        "https://evil-eldensys.hubdesktop.com.br",
+        "https://eldensys.hubdesktop.com.br:8443",
+        "http://localhost:5173",  # dev sem a chave ligada
+    ],
+)
+def test_post_config_recusa_origem_fora_da_politica(client, gravados, origem):
+    """Um site qualquer aberto na loja não pode trocar o programa que o agente
+    executa a cada PDF (era assim até a v0.5: CORS `*` + sumatra_path livre)."""
+    salvos, _ = gravados
+    r = client.post(
+        "/config",
+        json={"sumatra_path": "C:\\Windows\\System32\\calc.exe", "log_level": "DEBUG"},
+        headers={"Origin": origem},
+    )
+    assert r.status_code == 403
+    assert r.json()["erro"] == "origem_recusada"
+    assert salvos == []
+
+
+@pytest.mark.parametrize(
+    "origem", ["https://eldensys.hubdesktop.com.br", "https://loja1.eldensys.hubdesktop.com.br"]
+)
+def test_post_config_aceita_a_producao_e_subdominios(client, gravados, origem):
+    salvos, _ = gravados
+    r = client.post("/config", json={"log_level": "DEBUG"}, headers={"Origin": origem})
+    assert r.status_code == 200
+    assert salvos[-1].log_level == "DEBUG"
+
+
+def test_post_config_dev_e_extras_so_pelo_config_json(client, gravados):
+    salvos, estado = gravados
+    estado["cfg"] = AgentConfig(
+        biometria_permitir_dev=True, biometria_origens_extras=["https://ERP.minhaloja.com.br/", "*"]
+    )
+    for origem in ("http://localhost:5173", "http://127.0.0.1:5173", "https://erp.minhaloja.com.br"):
+        r = client.post("/config", json={"log_level": "INFO"}, headers={"Origin": origem})
+        assert r.status_code == 200, origem
+    # O curinga escrito à mão no arquivo não vira "qualquer site".
+    r = client.post("/config", json={"log_level": "INFO"}, headers={"Origin": "https://x.example"})
+    assert r.status_code == 403
+    # Texto "false" no JSON editado à mão não liga as origens de dev.
+    estado["cfg"] = AgentConfig(biometria_permitir_dev="false")  # type: ignore[arg-type]
+    r = client.post("/config", json={"log_level": "INFO"}, headers={"Origin": "http://localhost:5173"})
+    assert r.status_code == 403
+
+
+def test_post_config_nao_grava_as_chaves_da_politica(client, gravados):
+    """As origens extras e a chave de dev nunca vêm por rota HTTP."""
+    salvos, _ = gravados
+    r = client.post(
+        "/config",
+        json={"biometria_permitir_dev": True, "biometria_origens_extras": ["https://x.example"]},
+    )
+    assert r.status_code == 200
+    assert salvos[-1].biometria_permitir_dev is False
+    assert salvos[-1].biometria_origens_extras == []
+
+
+def test_sumatra_path_so_aceita_sumatra_existente(client, gravados, tmp_path):
+    salvos, _ = gravados
+    sumatra = tmp_path / "SumatraPDF-3.6.1-64.exe"
+    sumatra.write_bytes(b"MZ")
+    outro = tmp_path / "calc.exe"
+    outro.write_bytes(b"MZ")
+    recusados = [
+        str(outro),
+        str(tmp_path / "SumatraPDF.exe"),  # não existe
+        str(tmp_path),  # pasta
+        "SumatraPDF.exe",  # relativo
+        "\\\\servidor\\share\\SumatraPDF.exe",  # rede
+        str(tmp_path / "SumatraPDF.exe.bat"),
+    ]
+    for caminho in recusados:
+        r = client.post("/config", json={"sumatra_path": caminho})
+        assert r.status_code == 422, caminho
+        assert r.json()["erro"] == "sumatra_invalido"
+    assert salvos == []
+
+    r = client.post("/config", json={"sumatra_path": f"  {sumatra}  "})
+    assert r.status_code == 200
+    assert salvos[-1].sumatra_path == str(sumatra)
+    # Vazio volta à detecção automática ("Restaurar padrões").
+    r = client.post("/config", json={"sumatra_path": ""})
+    assert r.status_code == 200
+    assert salvos[-1].sumatra_path == ""
+
+
 def test_nao_existe_rota_local_que_grave_arquivo_ou_receba_trabalho(client):
     """O canal remoto e so de SAIDA: nenhuma rota nova no loopback sem senha."""
     rotas = {r.path for r in client.app.routes}
     assert not any(p.startswith(("/scale", "/files", "/agent", "/jobs", "/remote")) for p in rotas)
+
+
+def test_inventario_de_rotas(client):
+    """Rota nova no loopback é decisão de segurança: este teste obriga a vê-la."""
+    rotas = {
+        (metodo, r.path)
+        for r in client.app.routes
+        if not r.path.startswith(("/docs", "/redoc", "/openapi"))
+        for metodo in sorted(getattr(r, "methods", None) or ())
+        if metodo != "HEAD"
+    }
+    assert rotas == {
+        ("GET", "/health"),
+        ("GET", "/printers"),
+        ("GET", "/config"),
+        ("POST", "/config"),
+        ("POST", "/print/escpos"),
+        ("POST", "/print/raw"),
+        ("POST", "/print/pdf"),
+        ("POST", "/print/test"),
+        ("GET", "/biometria/status"),
+        ("POST", "/biometria/testar"),
+        ("POST", "/biometria/identificar"),
+        ("POST", "/biometria/login"),
+        ("POST", "/biometria/cadastro/iniciar"),
+        ("POST", "/biometria/cadastro/{sessao_id}/verificar"),
+        ("POST", "/biometria/cadastro/{sessao_id}/captura"),
+        ("POST", "/biometria/cadastro/{sessao_id}/concluir"),
+        ("POST", "/biometria/cadastro/{sessao_id}/descartar"),
+        ("POST", "/biometria/cancelar"),
+        ("POST", "/biometria/sincronizar"),
+    }
+
+
+def test_get_config_nao_expoe_as_chaves_da_biometria(client, monkeypatch):
+    monkeypatch.setattr(
+        server, "load_config", lambda: AgentConfig(biometria_origens_extras=["https://x.example"])
+    )
+    corpo = client.get("/config").json()
+    assert not any(k.startswith("biometria") for k in corpo)
+
+
+# ── biometria no app de verdade (create_app) ─────────────────────────────
+class _ServicoQueAnota:
+    """Só o necessário para as rotas: guarda quem foi chamado."""
+
+    def __init__(self):
+        self.chamadas: list[str] = []
+
+    def status(self):
+        self.chamadas.append("status")
+        return {"versao_agente": __version__}
+
+    def testar(self):
+        self.chamadas.append("testar")
+        return {"ok": True}
+
+
+@pytest.fixture
+def client_bio(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ensure_label_appdata", lambda: tmp_path)
+    monkeypatch.setattr(server, "load_config", lambda: AgentConfig())
+    servico = _ServicoQueAnota()
+    app = server.create_app(AgentConfig(), biometria=servico)
+    return TestClient(app, base_url="http://localhost:17777"), servico
+
+
+def test_biometria_no_app_exige_a_origem_da_retaguarda(client_bio, jobs):
+    c, servico = client_bio
+    r = c.post("/biometria/testar", headers={"Origin": "https://site-malicioso.example"})
+    assert r.status_code == 403
+    r = c.post("/biometria/testar", headers={"Origin": "https://eldensys.hubdesktop.com.br"})
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "https://eldensys.hubdesktop.com.br"
+    r = c.get("/biometria/status", headers={"Host": "evil.example:17777"})
+    assert r.status_code == 403
+    assert servico.chamadas == ["testar"]
+    # A impressão continua aceitando qualquer site, com CORS `*`.
+    r = c.post(
+        "/print/pdf",
+        json={"printer": "X", "pdf_base64": PDF},
+        headers={"Origin": "https://qualquer.example"},
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "*"
+
+
+def test_create_app_sem_servico_nao_abre_o_leitor(monkeypatch, tmp_path):
+    """O serviço padrão é preguiçoso: nenhuma thread, DLL ou leitor no startup."""
+    import threading
+
+    monkeypatch.setattr(server, "ensure_label_appdata", lambda: tmp_path)
+
+    def nomes() -> set:
+        return {t.ident for t in threading.enumerate() if t.name.startswith("biometria")}
+
+    antes = nomes()
+    c = TestClient(server.create_app(AgentConfig()))
+    assert c.get("/health").status_code == 200
+    assert nomes() <= antes

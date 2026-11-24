@@ -13,8 +13,10 @@ import pystray
 import uvicorn
 from PIL import Image, ImageDraw
 
+from .biometria.erros import ErroBiometria
+from .biometria.servico import ServicoBiometria, set_servico
 from .config import APP_DIR, CONFIG_PATH, LOG_DIR, load_config
-from .config_window import open_config_window_async
+from .config_window import describe_teste_leitor, open_config_window_async
 from .remote_jobs import RemoteJobsWorker, set_worker
 from .server import create_app
 
@@ -49,13 +51,22 @@ def _icon_image(color: str = "#1f7a3a") -> Image.Image:
 class AgentTray:
     def __init__(self) -> None:
         self.cfg = load_config()
-        self.app = create_app(self.cfg)
+        # Leitor biométrico (v0.6). Construir não abre o leitor nem carrega a
+        # DLL: tudo começa no primeiro uso (rota, menu ou poll da loja).
+        self.bio = ServicoBiometria()
+        set_servico(self.bio)
+        self.app = create_app(self.cfg, biometria=self.bio)
         self.server: uvicorn.Server | None = None
         self.server_thread: threading.Thread | None = None
         self.icon: pystray.Icon | None = None
         # Canal remoto (carga de balança / etiquetas vindas de outro aparelho).
         # Fica parado, sem rede, enquanto o agente não for pareado com a loja.
-        self.remote = RemoteJobsWorker()
+        # O heartbeat leva o estado do leitor e o poll traz a versão das
+        # digitais da loja (espelho da memória do leitor).
+        self.remote = RemoteJobsWorker(
+            capacidades_biometria_fn=self.bio.capacidades,
+            ao_poll_fn=self.bio.ao_poll,
+        )
         set_worker(self.remote)
 
     # ── server lifecycle ───────────────────────────────
@@ -97,9 +108,38 @@ class AgentTray:
     def _open_appdir(self, _icon=None, _item=None) -> None:
         os.startfile(str(APP_DIR))  # type: ignore[attr-defined]
 
+    def _testar_leitor(self, _icon=None, _item=None) -> None:
+        # A leitura pode levar alguns segundos: fora da thread do menu.
+        threading.Thread(
+            target=self._testar_leitor_bg, daemon=True, name="biometria-testar"
+        ).start()
+
+    def _testar_leitor_bg(self) -> None:
+        try:
+            texto = describe_teste_leitor(self.bio.testar())
+        except ErroBiometria as e:
+            texto = e.mensagem
+        except Exception:
+            log.exception("Falha ao testar o leitor biométrico")
+            texto = "Falha ao testar o leitor biométrico. Veja o log do agente."
+        self._notificar("Leitor biométrico", texto)
+
+    def _notificar(self, titulo: str, texto: str) -> None:
+        if not self.icon:
+            return
+        try:
+            self.icon.notify(texto, titulo)
+        except Exception:
+            log.warning("Não foi possível mostrar a notificação: %s", texto)
+
     def _quit(self, _icon=None, _item=None) -> None:
         log.info("Encerrando agente via tray")
         self.remote.stop()
+        # Solta o leitor: o PDV offline neste computador pode precisar dele.
+        try:
+            self.bio.parar()
+        except Exception:
+            log.exception("Falha ao encerrar a biometria")
         self.stop_server()
         if self.icon:
             self.icon.stop()
@@ -119,6 +159,7 @@ class AgentTray:
             pystray.MenuItem("Abrir pasta do agente", self._open_appdir),
             pystray.MenuItem("Abrir pasta de logs", self._open_logs),
             pystray.MenuItem("Verificar agente (/health)", self._open_url),
+            pystray.MenuItem("Testar leitor biométrico", self._testar_leitor),
             pystray.MenuItem("Editar config.json (avançado)", self._open_config),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Sair", self._quit),

@@ -1,6 +1,6 @@
 """Janela tkinter de configuração do agente.
 
-Duas abas:
+Três abas:
 
 - **Geral** — infraestrutura do agente: nível de log e caminho do
   SumatraPDF. A partir da v0.2 o agente é um intermediário puro; as opções
@@ -10,11 +10,16 @@ Duas abas:
   LOCAIS dos trabalhos que chegam de outro aparelho (pasta da balança e
   impressora de etiquetas). Ficam aqui, e não no EldenSys, de propósito: o
   servidor nunca dita caminho de disco nem nome de impressora desta máquina.
+- **Leitor biométrico** (v0.6) — estado do leitor e do espelho das digitais,
+  "Testar leitor", "Sincronizar digitais agora" e a prévia no cadastro. O
+  teste roda numa thread; o resultado volta por fila e só a thread da janela
+  mexe no Tk.
 """
 
 from __future__ import annotations
 
 import logging
+import queue
 import sys
 import threading
 import time
@@ -22,6 +27,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .biometria.erros import ErroBiometria
+from .biometria.servico import get_servico
 from .config import AgentConfig, is_paired, load_config, save_config
 from .printers import list_printers
 from .remote_client import PairingCodeError, parse_pairing_code
@@ -98,6 +105,78 @@ def describe_status(status: RemoteStatus | None, paired: bool) -> str:
     )
 
 
+def describe_teste_leitor(resultado: dict) -> str:
+    """Texto do "Testar leitor" (janela e bandeja). Função pura (testável)."""
+    modelo = resultado.get("modelo") or "Leitor"
+    partes = [p for p in (
+        f"série {resultado['serie']}" if resultado.get("serie") else "",
+        f"firmware {resultado['firmware']}" if resultado.get("firmware") else "",
+    ) if p]
+    linha = f"{modelo} respondeu" + (f" ({', '.join(partes)})." if partes else ".")
+    if resultado.get("pro") is False:
+        return linha + "\nEste leitor não é o iDBio Pro: ele não identifica digitais."
+    digitais = resultado.get("digitais")
+    if digitais is None:
+        return linha
+    return linha + f"\n{digitais} digitais na memória do leitor."
+
+
+def describe_bio_status(
+    status: dict | None, erro: str | None = None, poll: dict | None = None
+) -> str:
+    """Linha de estado da aba "Leitor biométrico". Função pura (testável)."""
+    if erro:
+        return erro
+    if status is None:
+        return "Biometria indisponível neste agente."
+    sdk = status.get("sdk") or {}
+    leitor = status.get("leitor") or {}
+    espelho = status.get("espelho") or {}
+    pareamento = status.get("pareamento") or {}
+    poll = poll or {}
+    linhas: list[str] = []
+    if not sdk.get("presente"):
+        linhas.append("Biblioteca do leitor ausente nesta instalação: reinstale o agente.")
+    elif sdk.get("erro"):
+        linhas.append(str(sdk["erro"]))
+    if leitor.get("travado"):
+        linhas.append("O leitor parou de responder: desconecte e reconecte o cabo USB.")
+    elif leitor.get("conectado"):
+        linha = f"{leitor.get('modelo') or 'Leitor'} conectado"
+        if leitor.get("serie"):
+            linha += f" (série {leitor['serie']})"
+        if leitor.get("pro") is False:
+            linha += " — não é o iDBio Pro"
+        elif leitor.get("digitais") is not None:
+            linha += f" — {leitor['digitais']} digitais na memória"
+        linhas.append(linha + ".")
+    elif leitor.get("erro"):
+        linhas.append(str(leitor["erro"]))
+    else:
+        linhas.append("Leitor ainda não usado desde que o agente abriu. Use “Testar leitor”.")
+    if leitor.get("ocupado"):
+        linhas.append(f"Em uso agora ({leitor.get('operacao') or 'leitura'}).")
+    if not pareamento.get("pareado"):
+        linhas.append("Agente não pareado: a retaguarda ainda não usa este leitor.")
+    elif poll.get("modulo") is False:
+        linhas.append("O módulo de biometria não está ligado nesta loja.")
+    elif poll.get("liberado") is False:
+        linhas.append(
+            "Este computador ainda não foi liberado para a biometria pelo administrador "
+            "(EldenSys → Configurações → Impressão)."
+        )
+    elif espelho.get("em_andamento"):
+        linhas.append(f"Recebendo as digitais da loja... {espelho.get('progresso') or 0}%")
+    elif espelho.get("sincronizado_em"):
+        if espelho.get("completo"):
+            linhas.append("Digitais da loja em dia na memória do leitor.")
+        else:
+            linhas.append(f"Digitais da loja: {espelho.get('faltando') or 0} ficaram de fora.")
+    if espelho.get("erro"):
+        linhas.append(f"Sincronização: {espelho['erro']}")
+    return "\n".join(linhas)
+
+
 def open_config_window_async() -> None:
     """Abre a janela em uma thread própria. Idempotente (uma janela por vez)."""
     global _window_open
@@ -136,6 +215,8 @@ class ConfigWindow:
 
         self.vars: dict[str, tk.Variable] = {}
         self._status_job: str | None = None
+        #: Resultados das ações da biometria (threads) → thread da janela.
+        self._fila_bio: queue.Queue[str] = queue.Queue()
         self._build()
         self._refresh_status()
 
@@ -165,10 +246,13 @@ class ConfigWindow:
 
         geral = ttk.Frame(notebook, padding=14)
         loja = ttk.Frame(notebook, padding=14)
+        bio = ttk.Frame(notebook, padding=14)
         notebook.add(geral, text="Geral")
         notebook.add(loja, text="Loja (balança e etiquetas)")
+        notebook.add(bio, text="Leitor biométrico")
         self._build_geral(geral)
         self._build_loja(loja)
+        self._build_biometria(bio)
 
         # ── Botões ──
         btns = ttk.Frame(self.root)
@@ -308,6 +392,103 @@ class ConfigWindow:
             wraplength=_WRAP - 30,
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
+    def _build_biometria(self, container: ttk.Frame) -> None:
+        container.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            container,
+            text="O leitor de digital (Control iD iDBio Pro) ligado neste computador é "
+            "usado pela retaguarda do EldenSys: liberação do supervisor, entrar pela "
+            "digital, confirmar o cliente e cadastrar digitais. As digitais ficam "
+            "cifradas no EldenSys e na memória do leitor — nunca neste computador.",
+            justify="left",
+            foreground="#555",
+            wraplength=_WRAP,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        est = ttk.LabelFrame(container, text="Estado", padding=10)
+        est.grid(row=1, column=0, sticky="we", pady=(0, 10))
+        est.columnconfigure(0, weight=1)
+        self.bio_status = tk.StringVar(value="")
+        ttk.Label(
+            est, textvariable=self.bio_status, justify="left", wraplength=_WRAP - 30
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        botoes = ttk.Frame(est)
+        botoes.grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Button(botoes, text="Testar leitor", command=self._bio_testar).pack(side="left")
+        ttk.Button(
+            botoes, text="Sincronizar digitais agora", command=self._bio_sincronizar
+        ).pack(side="left", padx=(6, 0))
+        self.bio_resultado = tk.StringVar(value="")
+        ttk.Label(
+            est, textvariable=self.bio_resultado, justify="left", wraplength=_WRAP - 30,
+            foreground="#1f5f99",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        previa_var = tk.BooleanVar(value=bool(getattr(self.cfg, "biometria_previa", True)))
+        self.vars["biometria_previa"] = previa_var
+        ttk.Checkbutton(
+            container, text="Mostrar prévia da digital no cadastro", variable=previa_var
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Label(
+            container,
+            text="A prévia é uma imagem pequena e desfocada de cada leitura, só para a "
+            "pessoa ver que o dedo foi lido. Vale a partir do próximo cadastro.",
+            foreground="#888",
+            justify="left",
+            wraplength=_WRAP - 30,
+        ).grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+    # ── ações da aba Leitor biométrico ────────────────
+    def _bio_testar(self) -> None:
+        servico = get_servico()
+        if servico is None:
+            self.bio_resultado.set("Biometria indisponível neste agente.")
+            return
+        self.bio_resultado.set("Testando o leitor... (não precisa pôr o dedo)")
+
+        def rodar() -> None:
+            try:
+                texto = describe_teste_leitor(servico.testar())
+            except ErroBiometria as e:
+                texto = e.mensagem
+            except Exception:
+                log.exception("Falha ao testar o leitor biométrico")
+                texto = "Falha ao testar o leitor. Veja o log do agente."
+            self._fila_bio.put(texto)
+
+        threading.Thread(target=rodar, daemon=True, name="biometria-testar").start()
+
+    def _bio_sincronizar(self) -> None:
+        servico = get_servico()
+        if servico is None:
+            self.bio_resultado.set("Biometria indisponível neste agente.")
+            return
+        try:
+            servico.sincronizar()
+            self.bio_resultado.set("Sincronização iniciada; o andamento aparece acima.")
+        except ErroBiometria as e:
+            self.bio_resultado.set(e.mensagem)
+
+    def _refresh_bio(self) -> None:
+        while True:
+            try:
+                self.bio_resultado.set(self._fila_bio.get_nowait())
+            except queue.Empty:
+                break
+        servico = get_servico()
+        if servico is None:
+            self.bio_status.set(describe_bio_status(None))
+            return
+        try:
+            texto = describe_bio_status(servico.status(), poll=servico.descricao_poll())
+        except ErroBiometria as e:
+            texto = describe_bio_status(None, erro=e.mensagem)
+        except Exception:
+            log.exception("Falha ao ler o estado da biometria")
+            texto = "Não foi possível ler o estado do leitor."
+        self.bio_status.set(texto)
+
     @staticmethod
     def _printer_names() -> list[str]:
         try:
@@ -324,6 +505,7 @@ class ConfigWindow:
             paired = is_paired(load_config())
             self.pair_status.set(describe_status(status, paired))
             self.unpair_btn.state(["!disabled"] if paired else ["disabled"])
+            self._refresh_bio()
             self._status_job = self.root.after(STATUS_REFRESH_MS, self._refresh_status)
         except tk.TclError:
             pass  # janela fechada entre o agendamento e a execução

@@ -11,3 +11,4 @@ vendor/SumatraPDF.exe
 .vscode/
 .idea/
 .r2.env
+vendor/idbio/*.dll

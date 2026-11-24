@@ -130,6 +130,86 @@ def test_heartbeat_reporta_versao_e_capacidades(tmp_path):
     assert st.last_ok is not None
 
 
+BIO = {
+    "configured": True,
+    "ok": True,
+    "sdk": True,
+    "pro": True,
+    "modelo": "iDBio Pro",
+    "serie": "SN-1",
+    "firmware": "1.2.0",
+    "digitais": 12,
+    "espelho_versao": "3:2026",
+    "espelho_completo": True,
+}
+
+
+def montar_com_biometria(tmp_path, *respostas, caps=None, ao_poll=None):
+    worker, client, impressos, pasta, estado = montar(tmp_path, *respostas)
+    vistos: list[dict] = []
+    worker._capacidades_biometria = caps or (lambda: dict(BIO))
+    worker._ao_poll = ao_poll or vistos.append
+    return worker, client, vistos, pasta
+
+
+def test_heartbeat_leva_o_bloco_da_biometria(tmp_path):
+    worker, client, _, pasta = montar_com_biometria(tmp_path, {"jobs": []})
+    worker.run_once()
+    caps = client.polls[0][2]
+    assert caps == {
+        "scale": {"configured": True, "ok": True, "folder": str(pasta)},
+        "label": {"configured": True, "ok": True, "printer": "Argox OS-214"},
+        "biometria": BIO,
+    }
+
+
+def test_construtor_aceita_as_funcoes_da_biometria(tmp_path):
+    vistos: list = []
+    worker = RemoteJobsWorker(
+        load_config_fn=lambda: AgentConfig(),
+        client_factory=lambda cfg: None,
+        capacidades_biometria_fn=lambda: {"configured": False},
+        ao_poll_fn=vistos.append,
+    )
+    assert worker.run_once() == remote_jobs.UNPAIRED_WAIT  # não pareado: nada muda
+    assert vistos == []
+
+
+def test_resposta_do_poll_vai_para_a_biometria(tmp_path):
+    resposta = {"jobs": [], "biometria": {"habilitado": True, "versao": "7:2026"}}
+    worker, _, vistos, _ = montar_com_biometria(tmp_path, resposta)
+    worker.run_once()
+    assert vistos == [resposta]
+
+
+def test_biometria_quebrada_nao_derruba_o_canal(tmp_path):
+    def caps():
+        raise RuntimeError("dll sumiu")
+
+    def ao_poll(resp):
+        raise RuntimeError("espelho quebrou")
+
+    worker, client, _, pasta = montar_com_biometria(
+        tmp_path, {"jobs": [job_balanca()]}, caps=caps, ao_poll=ao_poll
+    )
+    worker.run_once()
+    assert "biometria" not in client.polls[0][2]
+    assert worker.get_status().state == "online"
+    assert client.acks == [("j1", "done", "", {"paths": [str(pasta / "txitens.txt")]})]
+
+
+def test_cache_das_capacidades_nao_congela_a_biometria(tmp_path):
+    """Balança/etiqueta ficam em cache 30 s; o leitor é lido a cada poll."""
+    valores = iter([{"digitais": 1}, {"digitais": 2}])
+    worker, client, _, _ = montar_com_biometria(
+        tmp_path, {"jobs": []}, {"jobs": []}, caps=lambda: next(valores)
+    )
+    worker.run_once()
+    worker.run_once()
+    assert [p[2]["biometria"]["digitais"] for p in client.polls] == [1, 2]
+    assert "biometria" not in worker._caps_cache[2]
+
+
 def test_capacidades_denunciam_pasta_e_impressora_ausentes(tmp_path):
     worker, client, *_ = montar(
         tmp_path,
