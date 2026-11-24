@@ -211,7 +211,7 @@ class ServicoBiometria:
         sdk = self.leitor.sdk_estado()
         remoto = self._status_remoto_seguro()
         with self._lock:
-            agent_id, loja = self._agent_id, self._loja
+            agent_id, loja, liberado = self._agent_id, self._loja, self._liberado
         pareado = is_paired(cfg)
         return {
             "versao_agente": __version__,
@@ -228,6 +228,10 @@ class ServicoBiometria:
                 "loja": (loja or getattr(remoto, "store_name", "") or None) if pareado else None,
                 "tenant": cfg.server_tenant if pareado else None,
                 "api": cfg.server_url if pareado else None,
+                # PC liberado para a biometria pelo administrador (vem do poll).
+                # None = ainda não houve poll com o módulo ligado: a web deixa
+                # tentar e o servidor recusa com biometria_agente_nao_liberado.
+                "biometria_habilitada": liberado if pareado else None,
             },
             "espelho": espelho,
         }

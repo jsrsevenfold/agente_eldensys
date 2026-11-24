@@ -319,7 +319,15 @@ def test_status_sem_efeito_colateral_e_sem_segredos(m):
         "erro",
         "travado",
     }
-    assert set(corpo["pareamento"]) == {"pareado", "estado", "agent_id", "loja", "tenant", "api"}
+    assert set(corpo["pareamento"]) == {
+        "pareado",
+        "estado",
+        "agent_id",
+        "loja",
+        "tenant",
+        "api",
+        "biometria_habilitada",
+    }
     assert set(corpo["espelho"]) == {
         "versao",
         "completo",
@@ -331,9 +339,21 @@ def test_status_sem_efeito_colateral_e_sem_segredos(m):
     }
     assert corpo["pareamento"]["tenant"] == "loja_centro"
     assert corpo["pareamento"]["agent_id"] == "ag-1"
+    # Poll sem o bloco "biometria" (módulo desligado ou servidor antigo):
+    # liberação desconhecida.
+    assert corpo["pareamento"]["biometria_habilitada"] is None
     assert corpo["sdk"]["carregado"] is False  # nem carregou a DLL
     assert TOKEN not in r.text and INSTANCIA not in r.text
     assert m.fake.chamadas == [] and m.servidor.chamadas == []
+
+
+def test_status_informa_se_o_pc_foi_liberado(m):
+    """A web mostra "PC não liberado" antes de criar o desafio (contrato §7)."""
+    base = {"agent": {"id": "ag-1", "name": "Caixa 2"}, "store_name": "Loja Centro"}
+    m.servico.ao_poll({**base, "biometria": {"habilitado": True, "versao": "1:1"}})
+    assert m.chamar("GET", "/biometria/status").json()["pareamento"]["biometria_habilitada"] is True
+    m.servico.ao_poll({**base, "biometria": {"habilitado": False, "versao": None}})
+    assert m.chamar("GET", "/biometria/status").json()["pareamento"]["biometria_habilitada"] is False
 
 
 def test_status_nao_pareado(m):
