@@ -2,7 +2,10 @@
 # Run from the repo root: .\installer\build.ps1
 param(
     [switch]$Clean,
-    [switch]$SkipSumatra
+    [switch]$SkipSumatra,
+    # Gera o agente SEM o leitor biometrico (sem a DLL do iDBio). As rotas
+    # /biometria respondem sdk_ausente; impressao e canal remoto seguem iguais.
+    [switch]$SkipBiometria
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +25,39 @@ if (-not (Test-Path $sumatra) -and -not $SkipSumatra) {
     Write-Host "    e salve como vendor\SumatraPDF.exe (renomeie se vier com versão no nome)."
     Write-Host "    Use -SkipSumatra para ignorar e seguir o build (impressão PDF não funcionará)."
     throw "SumatraPDF.exe ausente."
+}
+
+# 1b) SDK do iDBio (leitor biometrico, v0.6)
+# A DLL nao vai para o git (licenca da Control iD a confirmar): fica em
+# vendor\idbio\ (ver vendor\idbio\README.txt). Conferimos o hash e a
+# arquitetura para nao empacotar outro build (o kit traz uma "win32" que
+# tambem e x64, de outro build) nem uma DLL de 32 bits.
+$idbioDll = Join-Path $root "vendor\idbio\libcidbio.dll"
+$idbioSha256 = "e9ddfff1f7476fe4039f08ec501bc22f8d0b0d8fbb4357a5a23dbef67a336702"
+if ($SkipBiometria) {
+    Write-Host "==> -SkipBiometria: agente SEM o leitor biometrico (DLL fora do pacote)" -ForegroundColor Yellow
+    $env:ELDENSYS_SEM_BIOMETRIA = "1"
+} else {
+    Write-Host "==> SDK do iDBio" -ForegroundColor Cyan
+    Remove-Item Env:\ELDENSYS_SEM_BIOMETRIA -ErrorAction SilentlyContinue
+    if (-not (Test-Path $idbioDll)) {
+        Write-Host "    libcidbio.dll nao encontrada em vendor\idbio\" -ForegroundColor Yellow
+        Write-Host "    Copie do kit IDBIO_SDK 1.7.0: lib\C_C++\win64\libcidbio.dll"
+        Write-Host "    Use -SkipBiometria para gerar o agente sem o leitor biometrico."
+        throw "libcidbio.dll ausente."
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 -Path $idbioDll).Hash.ToLower()
+    if ($hash -ne $idbioSha256) {
+        throw "libcidbio.dll com SHA-256 inesperado ($hash). Esperado: $idbioSha256 (SDK 1.7.0, win64)."
+    }
+    $bytes = [System.IO.File]::ReadAllBytes($idbioDll)
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+    $assinatura = [BitConverter]::ToUInt32($bytes, $peOffset)
+    $maquina = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+    if ($assinatura -ne 0x00004550 -or $maquina -ne 0x8664) {
+        throw ("libcidbio.dll nao e uma DLL x64 (maquina 0x{0:X4})." -f $maquina)
+    }
+    Write-Host "    OK: x64, SHA-256 conferido" -ForegroundColor Green
 }
 
 # 2) Garantir venv

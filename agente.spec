@@ -18,6 +18,15 @@ if (ROOT / "assets").exists():
 if (ROOT / "vendor" / "SumatraPDF.exe").exists():
     datas.append((str(ROOT / "vendor" / "SumatraPDF.exe"), "vendor"))
 
+# Leitor biométrico (v0.6): DLL x64 do SDK do iDBio em _internal/vendor/idbio,
+# onde agent/biometria/sdk.py procura. O build.ps1 confere presença, SHA-256 e
+# PE x64 antes; com -SkipBiometria ele liga ELDENSYS_SEM_BIOMETRIA e a DLL não
+# entra (o agente sobe e as rotas /biometria respondem sdk_ausente).
+binaries = []
+if os.environ.get("ELDENSYS_SEM_BIOMETRIA") != "1":
+    for dll in sorted((ROOT / "vendor" / "idbio").glob("*.dll")):
+        binaries.append((str(dll), "vendor/idbio"))
+
 hiddenimports = [
     "win32print",
     "win32api",
@@ -26,6 +35,9 @@ hiddenimports = [
     "pystray._win32",
     "PIL.Image",
     "PIL.ImageDraw",
+    # Prévia da digital no cadastro (agent/biometria/cadastro.py).
+    "PIL.ImageFilter",
+    "PIL.PngImagePlugin",
     "escpos.printer",
     "tkinter",
     "tkinter.ttk",
@@ -36,7 +48,7 @@ hiddenimports = [
 a = Analysis(
     ["run_agent.py"],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
