@@ -19,6 +19,8 @@ from agent import __version__  # noqa: E402
 RAIZ = Path(__file__).resolve().parent.parent
 #: Contrato da biometria: versão mínima do agente com as rotas /biometria.
 VERSAO_MINIMA_BIOMETRIA = (0, 6, 0)
+#: Contrato do lote de 24/11/2026: a web só consulta /balanca a partir desta.
+VERSAO_MINIMA_BALANCA = (0, 7, 0)
 
 
 def _tupla(versao: str) -> tuple[int, ...]:
@@ -36,6 +38,19 @@ def test_versao_igual_nos_tres_lugares():
 def test_versao_tem_a_biometria():
     assert re.fullmatch(r"\d+\.\d+\.\d+", __version__)
     assert _tupla(__version__) >= VERSAO_MINIMA_BIOMETRIA
+
+
+def test_versao_tem_a_balanca_de_checkout():
+    assert _tupla(__version__) >= VERSAO_MINIMA_BALANCA
+
+
+def test_pyserial_no_requirements_e_no_spec():
+    """Sem o pyserial no pacote, a balança some do agente instalado."""
+    reqs = (RAIZ / "requirements.txt").read_text(encoding="utf-8").split()
+    assert "pyserial==3.5" in reqs
+    spec = (RAIZ / "agente.spec").read_text(encoding="utf-8")
+    for modulo in ("serial.serialwin32", "serial.tools.list_ports_windows"):
+        assert f'"{modulo}"' in spec
 
 
 def test_instalador_so_para_windows_64_bits():

@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from .erros import ErroBiometria
 from .leitor import Cancelamento
-from .origem import MiddlewareOrigem, eh_rota_biometria
+from .origem import MiddlewareOrigem, eh_rota_balanca, eh_rota_biometria
 
 log = logging.getLogger("eldensys.agent.biometria.rotas")
 
@@ -170,14 +170,21 @@ def instalar(
     """Liga a biometria no app: rotas, middleware de origem e erro de validação.
 
     ``cors`` são os argumentos do CORS ``*`` das demais rotas (impressão): o
-    middleware de origem envolve esse CORS e só o aplica fora de /biometria.
+    middleware de origem envolve esse CORS e só o aplica fora das rotas
+    protegidas (/biometria e, desde a v0.7, /balanca — o middleware e este
+    tratador valem para as duas; ``balanca.rotas.instalar`` só põe as rotas).
     """
     app.include_router(criar_router(servico))
     app.add_middleware(MiddlewareOrigem, load_config_fn=load_config_fn, cors=cors)
 
     async def validacao(request: Request, exc: RequestValidationError) -> Any:
-        if eh_rota_biometria(request.url.path):
-            msg = "Pedido inválido para o leitor biométrico."
+        path = request.url.path
+        if eh_rota_biometria(path) or eh_rota_balanca(path):
+            msg = (
+                "Pedido inválido para a balança."
+                if eh_rota_balanca(path)
+                else "Pedido inválido para o leitor biométrico."
+            )
             return JSONResponse(
                 status_code=422,
                 content={"erro": "requisicao_invalida", "mensagem": msg, "detail": msg},

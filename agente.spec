@@ -43,6 +43,15 @@ hiddenimports = [
     "tkinter.ttk",
     "tkinter.messagebox",
     "tkinter.filedialog",
+    # Balança de checkout (agent/balanca/porta.py). O pyserial escolhe o
+    # backend e a listagem de portas por os.name em tempo de execução: o
+    # PyInstaller não enxerga esses imports sozinho.
+    "serial",
+    "serial.serialwin32",
+    "serial.win32",
+    "serial.tools.list_ports",
+    "serial.tools.list_ports_windows",
+    "serial.tools.list_ports_common",
 ]
 
 a = Analysis(

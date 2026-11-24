@@ -97,6 +97,26 @@ class AgentConfig:
     #: offline no mesmo computador usa o mesmo leitor.
     biometria_ocioso_s: float = 20.0
 
+    # ── Balança de checkout (v0.7, ver agent/balanca) ──
+    # A balança que PESA no caixa, lida pela porta serial para o PDV online.
+    # NÃO é a carga (scale_dir), que é a pasta do arquivo de produtos da
+    # balança etiquetadora. O serviço relê e valida estas chaves a cada uso:
+    # valor inválido (config.json editado à mão) vira o padrão.
+    #: Liga a leitura da balança neste PC (as rotas /balanca respondem 409
+    #: balanca_desligada e a porta nunca é aberta).
+    balanca_habilitada: bool = False
+    #: Porta COM da balança ("COM3"). Vazio = nenhuma escolhida.
+    balanca_porta: str = ""
+    #: Velocidade (2400, 4800, 9600, 19200 ou 38400); sempre 8N1, sem fluxo.
+    balanca_baud: int = 9600
+    #: auto, urano, toledo, filizola, elgin ou generico.
+    balanca_protocolo: str = "auto"
+    #: Prazo de uma leitura quando a web não manda o seu (200 a 10000 ms).
+    balanca_timeout_ms: int = 1500
+    #: Segundos com a porta aberta depois da última leitura. Depois ela é
+    #: devolvida: o PDV offline no mesmo computador pode precisar da COM.
+    balanca_ocioso_s: float = 5.0
+
 
 # Lista de chaves de config que existiam em versões anteriores e foram
 # removidas. Quando encontradas no JSON, são ignoradas silenciosamente

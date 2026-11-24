@@ -14,7 +14,11 @@ ou mexer no leitor biométrico, não. Estas rotas só atendem:
 O regex de ``config.DEFAULT_ALLOWED_ORIGIN_REGEX`` NÃO serve aqui: ele não
 cobre o domínio de produção e só existe para o CORS das rotas de impressão.
 
-Nas rotas ``/biometria*`` o ``MiddlewareOrigem`` também:
+A partir da v0.7 a balança de checkout (``/balanca*``) segue a mesma
+política: ler o peso e trocar a porta COM também não são para qualquer site.
+
+Nas rotas protegidas (``/biometria*`` e ``/balanca*``) o ``MiddlewareOrigem``
+também:
 
 - confere o ``Host`` (só ``localhost``/``127.0.0.1``/``[::1]``): sem isso um
   site com DNS apontando para 127.0.0.1 (DNS rebinding) falaria com o agente
@@ -107,6 +111,7 @@ def origem_permitida_cfg(origem: str | None, cfg: object) -> bool:
 # ── Host e interface de escuta ───────────────────────────────────────────
 NOMES_LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 PREFIXO_BIOMETRIA = "/biometria"
+PREFIXO_BALANCA = "/balanca"
 _CABECALHOS_SEGUROS_RE = re.compile(r"^[A-Za-z0-9-]+(\s*,\s*[A-Za-z0-9-]+)*$")
 
 
@@ -141,6 +146,23 @@ def eh_rota_biometria(path: str) -> bool:
     return path == PREFIXO_BIOMETRIA or path.startswith(PREFIXO_BIOMETRIA + "/")
 
 
+def eh_rota_balanca(path: str) -> bool:
+    return path == PREFIXO_BALANCA or path.startswith(PREFIXO_BALANCA + "/")
+
+
+def eh_rota_protegida(path: str) -> bool:
+    """Rotas com a política de origem (o resto segue com o CORS ``*``)."""
+    return eh_rota_biometria(path) or eh_rota_balanca(path)
+
+
+MSG_RECUSA_BIOMETRIA = "Este site não pode usar o leitor biométrico deste computador."
+MSG_RECUSA_BALANCA = "Este site não pode usar a balança deste computador."
+
+
+def _mensagem_recusa(path: str) -> str:
+    return MSG_RECUSA_BALANCA if eh_rota_balanca(path) else MSG_RECUSA_BIOMETRIA
+
+
 def _recusa(scope: dict, headers: Headers, cfg: object) -> str | None:
     """Motivo da recusa (para o log) ou None."""
     if not host_loopback(headers.get("host")):
@@ -170,10 +192,11 @@ def _cabecalhos_preflight(origem: str, headers: Headers) -> dict[str, str]:
 
 
 class MiddlewareOrigem:
-    """ASGI: CORS ``*`` nas rotas de impressão, política própria em ``/biometria``.
+    """ASGI: CORS ``*`` nas rotas de impressão, política própria nas
+    protegidas (``/biometria`` e ``/balanca``).
 
     Envolve o ``CORSMiddleware`` em vez de ficar por fora dele: assim o ``*``
-    nunca é acrescentado a uma resposta da biometria.
+    nunca é acrescentado a uma resposta protegida.
     """
 
     def __init__(
@@ -184,27 +207,26 @@ class MiddlewareOrigem:
         self._load_config = load_config_fn
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
-        if scope["type"] != "http" or not eh_rota_biometria(scope.get("path", "")):
+        path = scope.get("path", "")
+        if scope["type"] != "http" or not eh_rota_protegida(path):
             await self.cors(scope, receive, send)
             return
         headers = Headers(scope=scope)
         motivo = _recusa(scope, headers, self._load_config())
         if motivo is not None:
             log.warning(
-                "Biometria: pedido recusado (%s): %s %s Origin=%r Host=%r",
+                "%s: pedido recusado (%s): %s %s Origin=%r Host=%r",
+                "Balança" if eh_rota_balanca(path) else "Biometria",
                 motivo,
                 scope.get("method"),
-                scope.get("path"),
+                path,
                 (headers.get("origin") or "")[:200],
                 (headers.get("host") or "")[:200],
             )
+            mensagem = _mensagem_recusa(path)
             resposta = JSONResponse(
                 status_code=403,
-                content={
-                    "erro": "origem_recusada",
-                    "mensagem": "Este site não pode usar o leitor biométrico deste computador.",
-                    "detail": "Este site não pode usar o leitor biométrico deste computador.",
-                },
+                content={"erro": "origem_recusada", "mensagem": mensagem, "detail": mensagem},
             )
             await resposta(scope, receive, send)
             return

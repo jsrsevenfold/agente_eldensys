@@ -210,6 +210,64 @@ def test_cache_das_capacidades_nao_congela_a_biometria(tmp_path):
     assert "biometria" not in worker._caps_cache[2]
 
 
+BAL = {"configured": True, "ok": True, "porta": "COM3", "protocolo": "toledo"}
+
+
+def test_heartbeat_leva_o_bloco_da_balanca_de_checkout(tmp_path):
+    """``balanca_checkout`` é a balança que pesa no caixa; ``scale`` continua
+    sendo a pasta da carga (os dois convivem)."""
+    worker, client, _, pasta = montar_com_biometria(tmp_path, {"jobs": []})
+    worker._capacidades_balanca = lambda: dict(BAL)
+    worker.run_once()
+    assert client.polls[0][2] == {
+        "scale": {"configured": True, "ok": True, "folder": str(pasta)},
+        "label": {"configured": True, "ok": True, "printer": "Argox OS-214"},
+        "biometria": BIO,
+        "balanca_checkout": BAL,
+    }
+    assert "balanca_checkout" not in worker._caps_cache[2]
+
+
+def test_construtor_aceita_a_funcao_da_balanca(tmp_path):
+    worker, client, *_ = montar(tmp_path, {"jobs": []})
+    worker2 = RemoteJobsWorker(
+        load_config_fn=worker._load_config,
+        client_factory=lambda cfg: client,
+        list_printers_fn=lambda: [{"name": "Argox OS-214"}],
+        capacidades_balanca_fn=lambda: dict(BAL),
+    )
+    worker2.run_once()
+    caps = client.polls[0][2]
+    assert caps["balanca_checkout"] == BAL
+    assert "biometria" not in caps
+
+
+def test_balanca_quebrada_nao_derruba_o_canal_nem_a_biometria(tmp_path):
+    def caps_balanca():
+        raise RuntimeError("pyserial sumiu")
+
+    worker, client, _, pasta = montar_com_biometria(tmp_path, {"jobs": [job_balanca()]})
+    worker._capacidades_balanca = caps_balanca
+    worker.run_once()
+    caps = client.polls[0][2]
+    assert "balanca_checkout" not in caps
+    assert caps["biometria"] == BIO
+    assert worker.get_status().state == "online"
+    assert client.acks == [("j1", "done", "", {"paths": [str(pasta / "txitens.txt")]})]
+
+
+def test_biometria_quebrada_nao_apaga_a_balanca(tmp_path):
+    def caps_bio():
+        raise RuntimeError("dll sumiu")
+
+    worker, client, _, _ = montar_com_biometria(tmp_path, {"jobs": []}, caps=caps_bio)
+    worker._capacidades_balanca = lambda: dict(BAL)
+    worker.run_once()
+    caps = client.polls[0][2]
+    assert "biometria" not in caps
+    assert caps["balanca_checkout"] == BAL
+
+
 def test_capacidades_denunciam_pasta_e_impressora_ausentes(tmp_path):
     worker, client, *_ = montar(
         tmp_path,

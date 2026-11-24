@@ -117,6 +117,7 @@ class RemoteJobsWorker:
         list_printers_fn: Callable[[], list] = list_printers,
         capacidades_biometria_fn: Callable[[], dict] | None = None,
         ao_poll_fn: Callable[[dict], None] | None = None,
+        capacidades_balanca_fn: Callable[[], dict] | None = None,
     ) -> None:
         self._load_config = load_config_fn
         self._client_factory = client_factory or self._default_client
@@ -127,6 +128,10 @@ class RemoteJobsWorker:
         #: heartbeat fica idêntico ao da v0.5.
         self._capacidades_biometria = capacidades_biometria_fn
         self._ao_poll = ao_poll_fn
+        #: v0.7: bloco `capabilities.balanca_checkout` (a balança que pesa no
+        #: caixa, pela porta serial). Não confundir com `scale`, que é a
+        #: pasta da carga da balança etiquetadora.
+        self._capacidades_balanca = capacidades_balanca_fn
 
         self._status = RemoteStatus()
         self._status_lock = threading.Lock()
@@ -267,15 +272,26 @@ class RemoteJobsWorker:
     # ── capacidades (vão no heartbeat) ────────────────
     def _capabilities(self, cfg: AgentConfig) -> dict:
         caps = self._capabilities_locais(cfg)
-        if self._capacidades_biometria is None:
-            return caps
-        try:
-            bio = self._capacidades_biometria()
-        except Exception:
-            log.exception("Falha ao montar as capacidades da biometria")
-            return caps
-        # Cópia: o dicionário em cache (balança/etiqueta) não ganha a chave.
-        return {**caps, "biometria": bio} if isinstance(bio, dict) else caps
+        extras: dict[str, dict] = {}
+        # Cada bloco com o próprio try: uma falha num não apaga o outro.
+        if self._capacidades_biometria is not None:
+            try:
+                bio = self._capacidades_biometria()
+            except Exception:
+                log.exception("Falha ao montar as capacidades da biometria")
+            else:
+                if isinstance(bio, dict):
+                    extras["biometria"] = bio
+        if self._capacidades_balanca is not None:
+            try:
+                bal = self._capacidades_balanca()
+            except Exception:
+                log.exception("Falha ao montar as capacidades da balança de checkout")
+            else:
+                if isinstance(bal, dict):
+                    extras["balanca_checkout"] = bal
+        # Cópia: o dicionário em cache (balança/etiqueta) não ganha as chaves.
+        return {**caps, **extras} if extras else caps
 
     def _capabilities_locais(self, cfg: AgentConfig) -> dict:
         folder = (cfg.scale_dir or "").strip()

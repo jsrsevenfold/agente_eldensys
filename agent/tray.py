@@ -13,6 +13,8 @@ import pystray
 import uvicorn
 from PIL import Image, ImageDraw
 
+from .balanca.servico import ServicoBalanca
+from .balanca.servico import set_servico as set_servico_balanca
 from .biometria.erros import ErroBiometria
 from .biometria.servico import ServicoBiometria, set_servico
 from .config import APP_DIR, CONFIG_PATH, LOG_DIR, load_config
@@ -55,7 +57,11 @@ class AgentTray:
         # DLL: tudo começa no primeiro uso (rota, menu ou poll da loja).
         self.bio = ServicoBiometria()
         set_servico(self.bio)
-        self.app = create_app(self.cfg, biometria=self.bio)
+        # Balança de checkout (v0.7). Também preguiçosa: a COM só abre na
+        # primeira leitura e fecha sozinha depois de alguns segundos parada.
+        self.balanca = ServicoBalanca()
+        set_servico_balanca(self.balanca)
+        self.app = create_app(self.cfg, biometria=self.bio, balanca=self.balanca)
         self.server: uvicorn.Server | None = None
         self.server_thread: threading.Thread | None = None
         self.icon: pystray.Icon | None = None
@@ -66,6 +72,7 @@ class AgentTray:
         self.remote = RemoteJobsWorker(
             capacidades_biometria_fn=self.bio.capacidades,
             ao_poll_fn=self.bio.ao_poll,
+            capacidades_balanca_fn=self.balanca.capacidades,
         )
         set_worker(self.remote)
 
@@ -140,6 +147,11 @@ class AgentTray:
             self.bio.parar()
         except Exception:
             log.exception("Falha ao encerrar a biometria")
+        # Solta a COM da balança pelo mesmo motivo.
+        try:
+            self.balanca.parar()
+        except Exception:
+            log.exception("Falha ao encerrar a balança de checkout")
         self.stop_server()
         if self.icon:
             self.icon.stop()

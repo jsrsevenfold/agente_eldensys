@@ -11,7 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.biometria.origem import (  # noqa: E402
     agente_em_loopback,
+    eh_rota_balanca,
     eh_rota_biometria,
+    eh_rota_protegida,
     host_loopback,
     origem_permitida,
     origem_permitida_cfg,
@@ -107,3 +109,14 @@ def test_rota_biometria():
     assert eh_rota_biometria("/biometria/status")
     assert not eh_rota_biometria("/biometriax")
     assert not eh_rota_biometria("/print/pdf")
+
+
+def test_rota_balanca_tambem_e_protegida():
+    assert eh_rota_balanca("/balanca")
+    assert eh_rota_balanca("/balanca/leitura")
+    assert not eh_rota_balanca("/balancas")
+    assert not eh_rota_balanca("/print/pdf")
+    for path in ("/biometria/status", "/balanca/status", "/balanca"):
+        assert eh_rota_protegida(path)
+    for path in ("/print/pdf", "/health", "/config", "/balancax", "/scale"):
+        assert not eh_rota_protegida(path)
