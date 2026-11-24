@@ -15,13 +15,17 @@ servidor, agente e PDV offline:
 - tempos de ``SaveTemplate`` e ``CaptureAndIdentify``;
 - o que acontece ao desconectar o cabo.
 
-Uso (na raiz do repositório, com o leitor ligado):
+Uso (na raiz do repositório, com o leitor ligado, num console onde a pessoa
+lê as instruções e aperta Enter):
 
     .\\.venv\\Scripts\\python.exe -I tools\\sonda_idbio.py
     .\\.venv\\Scripts\\python.exe -I tools\\sonda_idbio.py --etapas info,ids,identificar
+    .\\.venv\\Scripts\\python.exe -I tools\\sonda_idbio.py --dedo "MÉDIO ESQUERDO"
 
-Etapas: pe, info, ciclos, captura, ids, identificar, cancelar, tempos,
-exclusivo, parametros, desconectar ("tudo" = todas menos desconectar).
+Etapas: pe, info, ciclos, captura, ids, identificar, afinidade, cancelar,
+tempos, exclusivo, parametros, desconectar ("tudo" = todas menos desconectar).
+Use ``--dedo`` com um dedo que NÃO esteja gravado no leitor: o mesmo dedo em
+outro id confunde a etapa ids. Nas 3 leituras da captura é sempre o mesmo dedo.
 
 Segurança:
 - só usa ids da faixa reservada ``[RESERVA_INICIO, 2**60)`` e apaga o que
@@ -29,8 +33,32 @@ Segurança:
   da faixa mudar;
 - nunca chama ``DeleteAllTemplates`` nem ``UpdateFirmware``;
 - todo ``SetParameter`` é desfeito no ``finally``;
-- imagens e templates ficam só na pasta ``--saida`` (apague-a depois: é
-  dado biométrico).
+- nenhuma imagem de digital vai para o disco (só estatísticas dos pixels) e
+  nenhum template; ``resultado.json`` e ``console.log`` ficam em ``--saida``.
+
+Medido na fase 0 (24/11/2026, iDBio Pro firmware 1.6.1, SDK 1.7.0 win64):
+- ``model`` = "iDBio Pro"; Init ~5 ms; 100 ciclos Init/Info/Terminate sem falha;
+- captura 260x300 cinza, template ICS de ~1.200 caracteres; mesclado ~3.300;
+- ``MatchTemplates``: mesmo dedo = 0 e 20000 pontos; outro dedo = -11 e 0;
+  ``MergeTemplates`` de dedos diferentes = -10;
+- ids de 60 bits (e até 2^63-1) voltam intactos do ``GetTemplateIDs`` e do
+  ``CaptureAndIdentify``;
+- ``SaveTemplate`` não recusa template repetido nem avisa sobrescrita (0);
+  ``DeleteTemplate`` de id inexistente = 0; só o ``CaptureAndEnroll`` dá -9;
+- identificar: dedo gravado = 0 + id; não gravado = -18; sem dedo = -6 no fim
+  do ``DETECT_TIMEOUT`` (padrão 30000); igual com 304 digitais na memória;
+- ``SaveTemplate`` e ``DeleteTemplate`` ~0,4 s CADA; ``GetTemplateIDs`` de 304
+  em ~0,13 s;
+- ``CancelCapture`` de outra thread: a captura volta com -20 em ~0,15 s (uma
+  vez -18, uma vez ~3 s);
+- sem afinidade de thread (Init numa thread que terminou, captura em outra,
+  Terminate numa terceira);
+- leitor aberto por outro processo: o ``Init`` do segundo devolve -2 (igual a
+  cabo solto);
+- ``SetParameter`` continua valendo depois de Terminate/Init;
+- cabo puxado: a sessão aberta responde -8; religado, o MESMO processo reabre
+  depois de ~18 s; captura esperando o dedo com o cabo puxado volta com -6 no
+  fim do ``DETECT_TIMEOUT``, sem travar.
 """
 
 from __future__ import annotations
@@ -104,6 +132,7 @@ ETAPAS_TUDO = [
     "captura",
     "ids",
     "identificar",
+    "afinidade",
     "cancelar",
     "tempos",
     "exclusivo",
@@ -257,18 +286,34 @@ def pedir(msg: str, *, enter: bool = True) -> None:
             time.sleep(3)
 
 
-def guardar_png(pasta: Path, nome_arq: str, imagem: bytes | None, w: int, h: int):
+def resumo_imagem(imagem: bytes | None, w: int, h: int):
+    """Só estatísticas dos pixels: a imagem da digital não vai para o disco."""
     if not imagem or not w or not h:
         return None
-    try:
-        from PIL import Image  # já está no venv do agente
+    return {"media": round(sum(imagem) / len(imagem), 1), "min": min(imagem), "max": max(imagem)}
 
-        pasta.mkdir(parents=True, exist_ok=True)
-        destino = pasta / nome_arq
-        Image.frombytes("L", (w, h), imagem).save(destino)
-        return str(destino)
-    except Exception as e:  # noqa: BLE001
-        return f"falhou: {e}"
+
+class _Tee:
+    """Escreve no console e no ``console.log`` ao mesmo tempo."""
+
+    def __init__(self, *fluxos):
+        self.fluxos = fluxos
+
+    def write(self, s):
+        for f in self.fluxos:
+            try:
+                f.write(s)
+                f.flush()
+            except Exception:  # noqa: BLE001
+                pass
+        return len(s)
+
+    def flush(self):
+        for f in self.fluxos:
+            try:
+                f.flush()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ── Etapas ───────────────────────────────────────────────────────────────
@@ -367,18 +412,17 @@ class Sonda:
         r = self.rel.etapa("captura")
         leituras = []
         for k in range(3):
-            pedir(f"CAPTURA {k + 1}/3: coloque o INDICADOR DIREITO no leitor quando aparecer "
-                  "'aguardando dedo'. Tire o dedo depois do bip.")
+            pedir(f"CAPTURA {k + 1}/3: coloque o {self.args.dedo} (sempre o MESMO dedo) no leitor "
+                  "quando aparecer 'aguardando dedo'. Tire o dedo depois do bip.")
             print("aguardando dedo...")
             t0 = time.perf_counter()
             rc, tpl, img, w, h, q = self.sdk.capturar()
             ms = round((time.perf_counter() - t0) * 1000)
-            png = guardar_png(self.args.saida, f"captura_{k + 1}.png", img, w, h)
             leituras.append({
                 "rc": rc, "ms": ms, "qualidade": q, "largura": w, "altura": h,
                 "bytes_imagem": len(img) if img else 0,
                 "imagem_ok": bool(img) and len(img) == w * h,
-                "template_tam": len(tpl) if tpl else 0, "png": png,
+                "template_tam": len(tpl) if tpl else 0, "pixels": resumo_imagem(img, w, h),
             })
             print(f"  {nome(rc)} em {ms} ms, qualidade {q}, {w}x{h}, template {len(tpl or '')} chars")
             if rc == 0 and tpl:
@@ -392,7 +436,11 @@ class Sonda:
             rc, s = self.sdk.comparar(self.templates[0], self.templates[1])
             r["match_mesmo_dedo"] = {"rc": rc, "score": s}
             print(f"MatchTemplates (mesmo dedo): {nome(rc)} score {s}")
-        pedir("Agora coloque OUTRO dedo (ex.: o polegar esquerdo) para comparar com o indicador.")
+            if self.mesclado is None:
+                print("As 3 leituras não formaram uma digital: foi sempre o mesmo dedo? "
+                      "(na fase 0, -10 aqui foi um dedo trocado). Rode a etapa de novo.")
+        pedir(f"Agora coloque OUTRO dedo (ex.: o polegar esquerdo) para comparar com o "
+              f"{self.args.dedo}.")
         print("aguardando dedo...")
         rc, tpl, img, w, h, q = self.sdk.capturar()
         if rc == 0 and tpl and self.templates:
@@ -475,7 +523,7 @@ class Sonda:
                              "tam_lido": len(lido or "")}
         print(f"GetTemplate: {nome(rc)}; igual ao gravado: {lido == self.mesclado}")
         # CaptureAndEnroll com dedo já gravado (-9 aqui?)
-        pedir("CaptureAndEnroll: coloque o INDICADOR DIREITO 3 vezes (o leitor apita a cada leitura).")
+        pedir(f"CaptureAndEnroll: coloque o {self.args.dedo} 3 vezes (o leitor apita a cada leitura).")
         print("aguardando 3 leituras...")
         rc = self.sdk.CaptureAndEnroll(RESERVA_FIM - 5)
         r["enroll_dedo_ja_gravado"] = nome(rc)
@@ -493,7 +541,7 @@ class Sonda:
             print(r["pulada"])
             return
         for rotulo, instr in (
-            ("dedo_gravado", "Coloque o INDICADOR DIREITO (o que foi gravado)."),
+            ("dedo_gravado", f"Coloque o {self.args.dedo} (o que foi gravado)."),
             ("dedo_nao_gravado", "Coloque um dedo que NÃO foi gravado (ex.: o mínimo esquerdo)."),
         ):
             pedir(instr)
@@ -517,6 +565,45 @@ class Sonda:
         finally:
             if rc0 >= 0 and original is not None:
                 self.sdk.SetParameter(PARAM_DETECT_TIMEOUT, original.encode())
+
+    # afinidade: leitor aberto por uma thread que já terminou (o isolate do PDV
+    # pode trocar de thread entre um comando e outro)
+    def etapa_afinidade(self):
+        r = self.rel.etapa("afinidade")
+        _, lista = self.sdk.ids()
+        if not any(RESERVA_INICIO <= i < RESERVA_FIM for i in lista):
+            r["pulada"] = "nenhuma digital de teste gravada (rode captura + ids antes)"
+            print(r["pulada"])
+            return
+        self.sdk.Terminate()
+        res: dict = {}
+        th = threading.Thread(target=lambda: res.__setitem__("init", self.sdk.Init()))
+        th.start()
+        th.join()
+        r["init_numa_thread_que_terminou"] = nome(res["init"])
+        print(f"Init numa thread que já terminou: {nome(res['init'])}")
+        rc, *_ = self.sdk.info()
+        r["info_em_outra_thread"] = nome(rc)
+        rc, lista = self.sdk.ids()
+        r["ids_em_outra_thread"] = {"rc": nome(rc), "total": len(lista)}
+        print(f"GetDeviceInfo / GetTemplateIDs na thread principal: {r['info_em_outra_thread']} / "
+              f"{nome(rc)} ({len(lista)} ids)")
+        pedir(f"AFINIDADE: coloque o {self.args.dedo} (o leitor foi aberto por outra thread, "
+              "que já terminou).")
+        print("aguardando dedo...")
+        t0 = time.perf_counter()
+        rc, id_, score, q = self.sdk.identificar()
+        ms = round((time.perf_counter() - t0) * 1000)
+        r["identificar_em_outra_thread"] = {"rc": nome(rc), "id": id_,
+                                            "na_reserva": RESERVA_INICIO <= id_ < RESERVA_FIM,
+                                            "score": score, "qualidade": q, "ms": ms}
+        print(f"  {nome(rc)} id={id_} score={score} qualidade={q} ({ms} ms)")
+        th = threading.Thread(target=lambda: res.__setitem__("term", self.sdk.Terminate()))
+        th.start()
+        th.join()
+        r["terminate_em_outra_thread"] = nome(res["term"])
+        print(f"Terminate numa terceira thread: {nome(res['term'])}")
+        self.init()
 
     # cancelar de outra thread
     def etapa_cancelar(self):
@@ -582,7 +669,7 @@ class Sonda:
         rc, lista = self.sdk.ids()
         r["get_ids"] = {"rc": nome(rc), "total": len(lista), "ms": round((time.perf_counter() - t0) * 1000)}
         print(f"GetTemplateIDs com {len(lista)}: {r['get_ids']['ms']} ms")
-        pedir(f"Coloque o INDICADOR DIREITO para identificar com {len(lista)} digitais na memória.")
+        pedir(f"Coloque o {self.args.dedo} para identificar com {len(lista)} digitais na memória.")
         t0 = time.perf_counter()
         rc, id_, score, q = self.sdk.identificar()
         r["identificar_cheio"] = {"rc": nome(rc), "id": id_, "score": score,
@@ -633,32 +720,57 @@ class Sonda:
         r["template_format"] = fmt
 
     # cabo
+    def _reabrir(self, r: dict, rotulo: str, limite_s: float = 30.0) -> int:
+        """Terminate + Init a cada 0,5 s até abrir (fase 0: ~18 s depois de religar)."""
+        t0 = time.perf_counter()
+        n = 0
+        while True:
+            self.sdk.Terminate()
+            rc = self.sdk.Init()
+            n += 1
+            if rc >= 0 or time.perf_counter() - t0 > limite_s:
+                break
+            time.sleep(0.5)
+        ms = round((time.perf_counter() - t0) * 1000)
+        r[rotulo] = {"rc": nome(rc), "ms": ms, "tentativas": n}
+        print(f"  {rotulo}: {nome(rc)} em {ms} ms ({n} tentativas)")
+        return rc
+
     def etapa_desconectar(self):
         r = self.rel.etapa("desconectar")
-        pedir("DESCONECTE o cabo USB do leitor agora (com ele ocioso).")
+        pedir("DESCONECTE o cabo USB do leitor agora (com ele ocioso) e aperte Enter.")
         rc, *_ = self.sdk.info()
         r["info_desconectado"] = nome(rc)
         print(f"GetDeviceInfo desconectado: {nome(rc)}")
-        pedir("RECONECTE o cabo e espere 3 s.")
         self.sdk.Terminate()
-        rc = self.init()
-        r["reabrir"] = nome(rc)
-        pedir("Agora vamos capturar e você DESCONECTA o cabo durante a espera do dedo "
-              "(sem colocar o dedo). Se o processo travar, a etapa registra.")
+        r["init_desconectado"] = nome(self.sdk.Init())
+        pedir("RECONECTE o cabo e aperte Enter logo em seguida (o programa tenta reabrir).")
+        if self._reabrir(r, "reabrir_apos_religar") < 0:
+            r["parada"] = "o mesmo processo não reabriu o leitor depois de religar"
+            print("  O mesmo processo não reabriu o leitor. Etapa encerrada.")
+            return
+        pedir("Agora o leitor vai esperar um dedo. NÃO ponha o dedo: aperte Enter e, uns 3 s "
+              "depois, DESCONECTE o cabo. Se o processo travar, a etapa registra.")
         saida: dict = {}
 
         def captura():
+            t0 = time.perf_counter()
             rc, *_ = self.sdk.identificar()
             saida["rc"] = rc
+            saida["ms"] = round((time.perf_counter() - t0) * 1000)
 
         th = threading.Thread(target=captura, daemon=True)
         th.start()
-        th.join(timeout=45)
-        r["desconectar_na_captura"] = "TRAVOU (sem retorno em 45 s)" if th.is_alive() else nome(saida.get("rc", 999))
-        print(f"Captura com o cabo arrancado: {r['desconectar_na_captura']}")
-        pedir("RECONECTE o cabo.")
-        self.sdk.Terminate()
-        r["reabrir_depois"] = nome(self.init())
+        th.join(timeout=60)
+        if th.is_alive():
+            r["desconectar_na_captura"] = "TRAVOU (sem retorno em 60 s)"
+            print("Captura com o cabo arrancado: TRAVOU")
+            self.rel.gravar()
+            os._exit(3)  # Terminate com a DLL presa travaria o processo também
+        r["desconectar_na_captura"] = {"rc": nome(saida["rc"]), "ms": saida["ms"]}
+        print(f"Captura com o cabo arrancado: {nome(saida['rc'])} depois de {saida['ms']} ms")
+        pedir("RECONECTE o cabo e aperte Enter logo em seguida.")
+        self._reabrir(r, "reabrir_apos_captura")
 
 
 def main() -> int:
@@ -675,8 +787,14 @@ def main() -> int:
     ap.add_argument("--cancelamentos", type=int, default=5)
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--sem-limpeza", action="store_true")
+    ap.add_argument("--dedo", default="INDICADOR DIREITO",
+                    help="dedo das leituras (um que NÃO esteja gravado no leitor)")
     args = ap.parse_args()
     args.dll = args.dll.resolve()
+    args.saida.mkdir(parents=True, exist_ok=True)
+    _log = open(args.saida / "console.log", "a", encoding="utf-8")  # noqa: SIM115
+    sys.stdout = _Tee(sys.stdout, _log)
+    sys.stderr = _Tee(sys.stderr, _log)
 
     etapas = ETAPAS_TUDO if args.etapas == "tudo" else [e.strip() for e in args.etapas.split(",") if e.strip()]
     rel = Relatorio(args.saida)

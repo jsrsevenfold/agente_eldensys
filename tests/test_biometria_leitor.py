@@ -245,8 +245,9 @@ def test_cancel_capture_e_repetido_se_chegar_antes_da_espera(monkeypatch, leitor
 
 
 # ── desconexão / em uso / SDK ────────────────────────────────────────────
-@pytest.mark.parametrize("codigo", [-2, -7])
+@pytest.mark.parametrize("codigo", [-2, -7, -8])
 def test_leitor_arrancado_fecha_e_reabre_na_proxima(leitor, fake, codigo):
+    # -8: o que a sessão aberta responde com o cabo puxado (fase 0).
     leitor.executar(lambda s, c: s.ids(), usuario=True, nome="a")
     fake.identificacoes.append(codigo)
     with pytest.raises(ErroLeitor) as exc:
@@ -255,7 +256,7 @@ def test_leitor_arrancado_fecha_e_reabre_na_proxima(leitor, fake, codigo):
     assert exc.value.status == 503
     assert not leitor.aberto
     assert fake.terminates == 1
-    # O status e o heartbeat param de mostrar o leitor pronto (-2 e -7).
+    # O status e o heartbeat param de mostrar o leitor pronto (-2, -7 e -8).
     assert leitor.fatos().conectado is False
     leitor.executar(lambda s, c: s.ids(), usuario=True, nome="c")
     assert fake.inits == 2
@@ -268,16 +269,31 @@ def test_sem_leitor_no_init_marca_desconectado(leitor, fake):
         leitor.executar(lambda s, c: s.ids(), usuario=True, nome="testar")
     assert exc.value.erro == "leitor_desconectado"
     assert leitor.estado()["conectado"] is False
+    # Fase 0: o Init devolve -2 também com o leitor aberto por outro programa
+    # (o PDV no mesmo PC) — a mensagem cita as duas causas.
     assert "cabo USB" in leitor.estado()["erro"]
+    assert "outro programa" in leitor.estado()["erro"]
 
 
-@pytest.mark.parametrize("codigo", [-19, -8])
-def test_init_com_leitor_preso_em_outro_programa_e_em_uso(leitor, fake, codigo):
-    fake.init_erro = codigo
+def test_init_ocupado_e_em_uso(leitor, fake):
+    fake.init_erro = -19
     with pytest.raises(LeitorEmUso) as exc:
         leitor.executar(lambda s, c: s.ids(), usuario=True, nome="testar")
     assert exc.value.status == 503
     assert exc.value.erro == "leitor_em_uso"
+
+
+def test_init_com_falha_de_comunicacao_fecha_e_marca_desconectado(leitor, fake):
+    # -8 não é "outro programa" (este devolve -2): é a comunicação que falhou.
+    fake.init_erro = -8
+    with pytest.raises(ErroLeitor) as exc:
+        leitor.executar(lambda s, c: s.ids(), usuario=True, nome="testar")
+    assert exc.value.erro == "leitor_desconectado"
+    assert not leitor.aberto
+    assert leitor.fatos().conectado is False
+    fake.init_erro = None
+    assert leitor.executar(lambda s, c: s.ids(), usuario=True, nome="de novo") == []
+    assert leitor.fatos().conectado is True
 
 
 def test_sdk_ausente_vira_sdk_indisponivel_e_aparece_no_estado():

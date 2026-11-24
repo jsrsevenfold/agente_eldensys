@@ -21,6 +21,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,11 @@ _TENANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
 _CHAVES_PROIBIDAS = frozenset({"template", "templates", "alvo_digitais", "digitais"})
 #: Capacidade documentada do iDBio Pro (o SDK não informa).
 CAPACIDADE_PADRAO = 3000
+#: Com o último fato "sem leitor", o poll torna a olhar depois deste tempo.
+#: Fase 0 (24/11/2026): o -2 também é o leitor preso por outro programa (o
+#: PDV esperando o dedo no mesmo PC), e o cabo religado só abre ~18 s depois —
+#: sem isso o status ficaria "sem leitor" até alguém apertar "Testar".
+RESONDAR_SEM_LEITOR_S = 15.0
 
 
 def biometria_ligada(cfg: AgentConfig) -> bool:
@@ -97,8 +103,10 @@ class ServicoBiometria:
         cliente_fn: Callable[[AgentConfig], Any] = ClienteBiometria.da_config,
         status_remoto_fn: Callable[[], Any] = _status_remoto_padrao,
         caminho_estado: Path | None = None,
+        relogio_fn: Callable[[], float] = time.monotonic,
     ) -> None:
         self._load_config = load_config_fn
+        self._relogio = relogio_fn
         self._dll_presente = dll_presente_fn
         self._cliente_fn = cliente_fn
         self._status_remoto = status_remoto_fn
@@ -119,7 +127,8 @@ class ServicoBiometria:
         self._versao_servidor: str | None = None
         self._agent_id: str | None = None
         self._loja = ""
-        self._sondado = False
+        #: Quando a última sondagem começou (None = nunca neste processo).
+        self._sondado_em: float | None = None
 
     # ── configuração ──────────────────────────────────
     def _ocioso_s(self) -> float:
@@ -308,21 +317,29 @@ class ServicoBiometria:
             self.espelho.guardar_agente(agent_id, loja, impressao_do_pareamento(cfg))
         if not modulo or not self._dll_presente():
             return
-        # Uma sondagem por processo, liberado ou não: com o espelho em dia
-        # (versão do poll = a do disco) nada mais tocaria no leitor e o status
-        # e o heartbeat ficariam "leitor não encontrado" até alguém usá-lo.
+        # Sondagem liberado ou não: com o espelho em dia (versão do poll = a do
+        # disco) nada mais tocaria no leitor e o status e o heartbeat ficariam
+        # "leitor não encontrado" até alguém usá-lo.
         self.sondar()
         if liberado:
             self.espelho.ao_poll(versao)
 
     def sondar(self) -> None:
-        """Uma leitura de fundo (info + ids), uma vez por processo, para o status
-        e o heartbeat mostrarem o leitor. Tarefa de fundo: o leitor é devolvido
-        logo em seguida (o PDV no mesmo PC usa o mesmo leitor)."""
+        """Leitura de fundo (info + ids) para o status e o heartbeat mostrarem o
+        leitor: a primeira do processo e, enquanto o último fato for "sem
+        leitor", outra a cada ``RESONDAR_SEM_LEITOR_S`` (cabo religado, ou o
+        PDV no mesmo PC que soltou o leitor). Leitor conectado não é mais
+        sondado: as operações mantêm os fatos. Tarefa de fundo: o leitor é
+        devolvido logo em seguida (o PDV no mesmo PC usa o mesmo leitor)."""
+        conectado = self.leitor.fatos().conectado is True
+        agora = self._relogio()
         with self._lock:
-            if self._sondado:
+            ultima = self._sondado_em
+            if ultima is not None and (conectado or agora - ultima < RESONDAR_SEM_LEITOR_S):
                 return
-            self._sondado = True
+            self._sondado_em = agora
+        if ultima is not None and self.leitor.ocupado_por_usuario():
+            return  # a operação em andamento já vai dizer como está o leitor
 
         def tarefa(sdk: Any, ctx: Any) -> None:
             self._anotar_info(sdk)
