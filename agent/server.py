@@ -1,4 +1,10 @@
-"""FastAPI server exposing the print agent on localhost."""
+"""FastAPI server exposing the print agent on localhost.
+
+Rotas de impressão com CORS ``*`` (qualquer página da loja imprime) e, a
+partir da v0.6, as rotas ``/biometria`` com política de origem própria
+(``agent/biometria/origem.py``): só a retaguarda do EldenSys, só pelo
+loopback.
+"""
 
 from __future__ import annotations
 
@@ -6,21 +12,27 @@ import base64
 import logging
 from io import BytesIO
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .biometria import rotas as rotas_biometria
 from .biometria.origem import origem_permitida_cfg
 from .config import AgentConfig, load_config, save_config
 from .escpos_renderer import EscposPayload, render
 from .pdf_printer import ensure_label_appdata, print_pdf
 from .printers import get_default_printer, list_printers, write_raw
 
+if TYPE_CHECKING:
+    from .biometria.servico import ServicoBiometria
+
 log = logging.getLogger("eldensys.agent.server")
+
+#: O que esta versão do agente sabe fazer (a web decide o que oferecer).
+RECURSOS = ["impressao", "canal_remoto", "biometria"]
 
 
 # ── Pydantic body models (module-level for proper FastAPI body detection) ──
@@ -129,7 +141,9 @@ def _build_test_escpos(printer: str, profile: Literal["58mm", "80mm"]) -> Escpos
     )
 
 
-def create_app(cfg: AgentConfig | None = None) -> FastAPI:
+def create_app(
+    cfg: AgentConfig | None = None, biometria: ServicoBiometria | None = None
+) -> FastAPI:
     cfg = cfg or load_config()
     app = FastAPI(title="EldenSys Print Agent", version=__version__)
 
@@ -138,13 +152,26 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     # arquivo ao sair. Nunca levanta.
     ensure_label_appdata()
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cfg.allowed_origins,
-        allow_origin_regex=cfg.allowed_origin_regex or None,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
+    if biometria is None:
+        # Construir não abre o leitor nem carrega a DLL: tudo é preguiçoso.
+        from .biometria.servico import ServicoBiometria
+
+        biometria = ServicoBiometria()
+    # Rotas /biometria + o middleware de origem, que envolve o CORS `*` das
+    # rotas de impressão (o `*` nunca chega a uma resposta da biometria).
+    # `load_config` resolvido a cada pedido: o config.json pode mudar sem
+    # reiniciar (origens extras, biometria ligada/desligada).
+    rotas_biometria.instalar(
+        app,
+        biometria,
+        load_config_fn=lambda: load_config(),
+        cors={
+            "allow_origins": cfg.allowed_origins,
+            "allow_origin_regex": cfg.allowed_origin_regex or None,
+            "allow_credentials": False,
+            "allow_methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["*"],
+        },
     )
 
     # ── Health ─────────────────────────────────────────
@@ -154,6 +181,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "status": "ok",
             "service": "eldensys-agent",
             "version": __version__,
+            "recursos": list(RECURSOS),
         }
 
     # ── Printers ───────────────────────────────────────
