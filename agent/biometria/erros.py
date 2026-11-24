@@ -20,7 +20,13 @@ TABELA: dict[int, tuple[str, str]] = {
     1: ("ja_iniciado", "Leitor já estava aberto"),
     0: ("ok", "Operação concluída"),
     -1: ("desconhecido", "Erro desconhecido no leitor"),
-    -2: ("sem_leitor", "Leitor biométrico não encontrado. Confira o cabo USB."),
+    # -2 também é o que o Init devolve com o leitor aberto por OUTRO programa
+    # (fase 0, 24/11/2026): não dá para distinguir de cabo solto.
+    -2: (
+        "sem_leitor",
+        "Leitor biométrico não encontrado ou em uso por outro programa. "
+        "Confira o cabo USB e tente de novo.",
+    ),
     -3: ("argumento", "Erro interno ao chamar o leitor"),
     -4: ("argumento", "Erro interno ao chamar o leitor"),
     -5: ("falha_captura", "Não foi possível ler o dedo. Tente de novo."),

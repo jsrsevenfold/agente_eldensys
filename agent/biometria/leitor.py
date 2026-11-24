@@ -15,11 +15,16 @@ UMA thread ("biometria-leitor"), que atende uma fila de prioridade:
 - **cancelar de fora.** ``CancelCapture`` é a única função chamada de outra
   thread (o SDK prevê isso); é repetida algumas vezes porque o pedido pode
   chegar um instante antes de a captura começar a esperar o dedo.
-- **leitor arrancado.** -2 e -7 fecham o leitor (``Terminate``), anotam
-  ``conectado=False`` e a próxima operação reabre.
+- **leitor arrancado.** -2, -7 e -8 fecham o leitor (``Terminate``), anotam
+  ``conectado=False`` e a próxima operação reabre. Fase 0 (24/11/2026): com o
+  cabo puxado a sessão aberta responde -8; religado, o ``Init`` só volta a dar
+  certo uns 18 s depois (no mesmo processo, sem reiniciar nada); uma captura
+  esperando o dedo não percebe o cabo puxado e volta com -6 no fim do
+  ``DETECT_TIMEOUT``.
 - **fatos sem sondar.** O status e o heartbeat não tocam no leitor: leem o
   que as operações provaram. Uma identificação que respondeu (achando ou não)
-  prova o iDBio Pro conectado (``Contexto.identificar``).
+  prova o iDBio Pro conectado (``Contexto.identificar``). Quem torna a olhar
+  um leitor "sem leitor" é o poll (``ServicoBiometria.sondar``).
 - **vigia.** Uma chamada que passa muito do prazo marca ``travado``: a thread
   está presa na DLL e nada mais é aceito até ela voltar (aí o leitor é
   fechado e reaberto).
@@ -70,11 +75,13 @@ FOLGA_FILA_S = 30.0
 OCIOSO_PADRAO_S = 20.0
 OCIOSO_MIN_S, OCIOSO_MAX_S = 0.05, 600.0
 
-#: Fecha o leitor e reabre na próxima operação.
-CODIGOS_REABRIR = frozenset({SEM_LEITOR, USB})
-#: ``Init`` com estes códigos = outro programa segura o leitor (a fase 0 confirma
-#: qual dos dois aparece com o PDV aberto no mesmo PC).
-CODIGOS_INIT_EM_USO = frozenset({OCUPADO, IO_HOST})
+#: Fecha o leitor e reabre na próxima operação (-8 = sessão aberta com o cabo
+#: puxado, medido na fase 0).
+CODIGOS_REABRIR = frozenset({SEM_LEITOR, USB, IO_HOST})
+#: ``Init`` com este código = leitor ocupado. Fase 0: com o leitor aberto por
+#: OUTRO programa (o PDV no mesmo PC) o ``Init`` devolve -2, igual a cabo solto
+#: — por isso a mensagem do -2 cita as duas causas.
+CODIGOS_INIT_EM_USO = frozenset({OCUPADO})
 
 #: Repetições do ``CancelCapture`` (o pedido pode chegar antes da espera).
 CANCEL_REPETICOES = 3
