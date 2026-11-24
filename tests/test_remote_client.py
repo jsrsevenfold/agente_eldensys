@@ -19,10 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent import __version__  # noqa: E402
 from agent.remote_client import (  # noqa: E402
+    CODE_SEM_BIOMETRIA,
+    ModuloInativo,
     PairingCodeError,
     PairingRejected,
     RateLimited,
     RemoteClient,
+    ServidorRecusou,
     StoreBlocked,
     TransportError,
     parse_pairing_code,
@@ -223,3 +226,119 @@ def test_opener_padrao_nao_segue_redirect():
     from agent.remote_client import _NoRedirect
 
     assert _NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://outro") is None
+
+
+# ── _request: GET, prazo por chamada e erros de negócio (v0.6) ───────────
+def test_request_get_com_query_sem_corpo_e_prazo_proprio():
+    op = _Opener({"versao": "3:2026", "igual": True})
+    resp = cliente(op)._request(
+        "GET",
+        "/agent/biometria/digitais/",
+        query={"versao": "3:2026-11-24T10:00:00+00:00", "nada": None},
+        timeout=7.5,
+        negocio=True,
+    )
+    assert resp == {"versao": "3:2026", "igual": True}
+    req = op.reqs[0]
+    assert req.get_method() == "GET"
+    assert req.full_url == (
+        "https://api.eldensys.com.br/api/agent/biometria/digitais/"
+        "?versao=3%3A2026-11-24T10%3A00%3A00%2B00%3A00"
+    )
+    assert req.data is None
+    assert req.get_header("Content-type") is None
+    assert req.get_header("Authorization") == f"Bearer {TOKEN}"
+    assert req.get_header("X-tenant") == "loja_centro"
+    assert req.get_header("X-agent-instance") == "inst-123"
+    assert op.timeouts == [7.5]
+
+
+def test_post_continua_usando_o_prazo_da_instancia():
+    op = _Opener({})
+    c = RemoteClient(
+        "https://api.eldensys.com.br/api", "loja_centro", TOKEN, "inst-123", opener=op, timeout=3
+    )
+    c._post("/agent/poll/", {"a": 1})
+    c._request("POST", "/agent/biometria/login/", {"b": 2}, negocio=True)
+    assert op.timeouts == [3, 3]
+    assert [r.get_method() for r in op.reqs] == ["POST", "POST"]
+    assert json.loads(op.reqs[1].data) == {"b": 2}
+
+
+def _negocio(erro):
+    cliente(_Opener(erro=erro))._request("GET", "/agent/biometria/desafios/x/", negocio=True)
+
+
+def test_negocio_401_continua_pareamento_recusado():
+    with pytest.raises(PairingRejected) as exc:
+        _negocio(http_error(401, {"detail": "Token revogado.", "code": "agent_token_invalid"}))
+    assert exc.value.code == "agent_token_invalid"
+
+
+def test_negocio_403_com_module_e_modulo_inativo():
+    corpo = {"detail": "Módulo não contratado para este estabelecimento.", "module": "biometria"}
+    with pytest.raises(ModuloInativo) as exc:
+        _negocio(http_error(403, corpo))
+    assert exc.value.module == "biometria"
+
+
+@pytest.mark.parametrize("code", ["tenant_blocked", "tenant_inactive"])
+def test_negocio_403_tenant_e_loja_bloqueada(code):
+    with pytest.raises(StoreBlocked):
+        _negocio(http_error(403, {"detail": "Esta empresa está desativada.", "code": code}))
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (403, "biometria_agente_nao_liberado"),
+        (403, "biometria_sem_vinculo"),
+        (404, "not_found"),
+        (409, "biometria_desafio_usado"),
+        (410, "biometria_desafio_expirado"),
+        (422, "biometria_template_invalido"),
+        (400, "biometria_dedo_invalido"),
+    ],
+)
+def test_negocio_recusa_com_code_vira_servidor_recusou(status, code):
+    with pytest.raises(ServidorRecusou) as exc:
+        _negocio(http_error(status, {"detail": "Explicação em português.", "code": code}))
+    assert (exc.value.status, exc.value.code, exc.value.detail) == (
+        status,
+        code,
+        "Explicação em português.",
+    )
+    assert str(exc.value) == "Explicação em português."
+
+
+def test_negocio_404_sem_code_e_servidor_sem_biometria():
+    """404 de rota inexistente (EldenSys anterior à biometria) não é pareamento recusado."""
+    erro = urllib.error.HTTPError(
+        "https://x", 404, "Not Found", {}, io.BytesIO(b"<h1>Not Found</h1>")
+    )
+    with pytest.raises(ServidorRecusou) as exc:
+        _negocio(erro)
+    assert exc.value.code == CODE_SEM_BIOMETRIA
+    assert "ainda não tem a biometria" in exc.value.detail
+
+
+def test_negocio_429_e_5xx_seguem_como_antes():
+    with pytest.raises(RateLimited) as exc:
+        _negocio(http_error(429, headers={"Retry-After": "12"}))
+    assert exc.value.retry_after == 12.0
+    with pytest.raises(TransportError):
+        _negocio(http_error(503, {"detail": "manutenção"}))
+    with pytest.raises(TransportError):
+        _negocio(urllib.error.URLError("getaddrinfo failed"))
+
+
+@pytest.mark.parametrize("status", [404, 409, 410, 422])
+def test_poll_e_ack_nao_mudaram_com_as_rotas_de_negocio(status):
+    """Sem `negocio`, 404 segue pedindo novo pareamento e o resto é transporte."""
+    erro = http_error(status, {"detail": "x", "code": "biometria_algo"})
+    esperado = PairingRejected if status == 404 else TransportError
+    with pytest.raises(esperado):
+        cliente(_Opener(erro=erro)).poll("0.6.0", "PC", {})
+    erro = http_error(403, {"detail": "x", "module": "biometria"})
+    with pytest.raises(StoreBlocked):
+        cliente(_Opener(erro=erro)).ack("1", "done")
