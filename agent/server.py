@@ -3,7 +3,8 @@
 Rotas de impressão com CORS ``*`` (qualquer página da loja imprime) e, a
 partir da v0.6, as rotas ``/biometria`` com política de origem própria
 (``agent/biometria/origem.py``): só a retaguarda do EldenSys, só pelo
-loopback.
+loopback. A v0.7 acrescenta ``/balanca`` (balança de checkout pela porta
+serial), com a mesma política.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .balanca import rotas as rotas_balanca
 from .biometria import rotas as rotas_biometria
 from .biometria.origem import origem_permitida_cfg
 from .config import AgentConfig, load_config, save_config
@@ -27,12 +29,13 @@ from .pdf_printer import ensure_label_appdata, print_pdf
 from .printers import get_default_printer, list_printers, write_raw
 
 if TYPE_CHECKING:
+    from .balanca.servico import ServicoBalanca
     from .biometria.servico import ServicoBiometria
 
 log = logging.getLogger("eldensys.agent.server")
 
 #: O que esta versão do agente sabe fazer (a web decide o que oferecer).
-RECURSOS = ["impressao", "canal_remoto", "biometria"]
+RECURSOS = ["impressao", "canal_remoto", "biometria", "balanca_checkout"]
 
 
 # ── Pydantic body models (module-level for proper FastAPI body detection) ──
@@ -142,7 +145,9 @@ def _build_test_escpos(printer: str, profile: Literal["58mm", "80mm"]) -> Escpos
 
 
 def create_app(
-    cfg: AgentConfig | None = None, biometria: ServicoBiometria | None = None
+    cfg: AgentConfig | None = None,
+    biometria: ServicoBiometria | None = None,
+    balanca: ServicoBalanca | None = None,
 ) -> FastAPI:
     cfg = cfg or load_config()
     app = FastAPI(title="EldenSys Print Agent", version=__version__)
@@ -173,6 +178,15 @@ def create_app(
             "allow_headers": ["*"],
         },
     )
+
+    if balanca is None:
+        # Construir não abre a porta nem cria a thread: tudo é preguiçoso.
+        from .balanca.servico import ServicoBalanca
+
+        balanca = ServicoBalanca()
+    # Rotas /balanca: o middleware de origem e o tratador de corpo inválido
+    # instalados acima (biometria) já cobrem o prefixo.
+    rotas_balanca.instalar(app, balanca)
 
     # ── Health ─────────────────────────────────────────
     @app.get("/health")

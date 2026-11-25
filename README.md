@@ -13,6 +13,9 @@ no Railway) alcance o que só existe no computador da loja:
   ligado neste computador, usado pela retaguarda: liberação do supervisor,
   entrar pela digital, confirmar o cliente na venda a prazo e cadastrar
   digitais. Ver [Leitor biométrico](#leitor-biométrico-v06).
+- **Balança de checkout (v0.7)** — a balança que pesa no caixa, ligada na
+  porta serial (COM) deste computador, lida pelo PDV online (produtos por
+  quilo e refeição por quilo). Ver [Balança de checkout](#balança-de-checkout-v07).
 
 ## Arquitetura
 
@@ -179,6 +182,58 @@ servidor), `servico.py` (fachada), `origem.py` (política de origem e CORS),
 `rotas.py`, `erros.py`. Testes sem o leitor usam `tests/fake_idbio.py`; com o
 leitor ligado, `tools/sonda_idbio.py` mede o aparelho.
 
+## Balança de checkout (v0.7)
+
+O navegador não alcança a porta COM: o PDV online pede ao agente uma leitura
+curta e repete enquanto pesa (o peso "ao vivo" é isso, sem WebSocket). Quem
+decide se o peso estabilizou é a web (3 leituras a até 5 g da média).
+
+- **Mesmos protocolos do PDV offline**: Urano 12 (UDC/POP, pedido ENQ com EOT
+  de reserva), Toledo Prix e Urano Std (ENQ, `STX … ETX`), Filizola (ENQ),
+  Elgin DP e genérico ASCII (só escutam), e `auto`, que tenta do mais
+  específico ao mais genérico e "gruda" no que reconheceu. A interpretação é
+  um porte fiel de `balanca_protocolos.dart` (os 70 casos do teste do Dart
+  estão em `tests/test_balanca_protocolos.py`).
+- **Porta**: 8N1, sem controle de fluxo; só a velocidade muda. Abre na
+  primeira leitura e **fecha sozinha** depois de `balanca_ocioso_s` (5 s) sem
+  uso — uma COM só atende um programa por vez e o PDV offline no mesmo PC pode
+  precisar dela. Com a porta presa por outro programa a resposta é
+  `503 porta_em_uso` (e a web lança como antes da balança).
+- **Só neste computador**: as rotas seguem a mesma
+  [política de origem](#segurança-das-rotas-locais) da biometria, e a balança
+  só funciona com o agente em `127.0.0.1`.
+- Não é a carga da balança etiquetadora (`scale_dir`, aba **Loja**).
+
+| Método | Rota | O que faz |
+|---|---|---|
+| GET  | `/balanca/status` | `{versao_agente, habilitada, config: {habilitada, porta, baud, protocolo, timeout_ms}, porta: {aberta, erro}, ultima_leitura, protocolos: [{id, rotulo}], bauds}`. Não abre a porta; desligada não é erro. |
+| GET  | `/balanca/portas` | `{portas: [{porta: "COM3", descricao}]}`, pelo número da COM. |
+| POST | `/balanca/config` | `{habilitada?, porta?, baud?, protocolo?, timeout_ms?}` → `{config}`. Porta `COMn` ou vazia; baud 2400/4800/9600/19200/38400; protocolo `auto`/`urano`/`toledo`/`filizola`/`elgin`/`generico`; tempo 200–10000 ms. |
+| POST | `/balanca/leitura` | `{timeout_ms? (100–2000), teste?: {porta, baud, protocolo}, diagnostico?}` → `{estado, kg, protocolo, lido_como, bytes, frame?: {texto, hex}}`. `teste` usa os valores sem salvar e dispensa a balança ligada. |
+| POST | `/balanca/detectar` | `{porta?, baud?}` → `{protocolo \| null, estado, kg, bytes, frame}` (até ~8 s; para se o navegador desconectar). |
+| POST | `/balanca/liberar` | Fecha a porta agora → `{liberada: true}`. |
+
+`estado` é o frame cru — `peso`, `zero`, `instavel`, `negativo`,
+`sobrecarga`, `sem_resposta` (nenhum byte) ou `nao_reconhecido` (bytes num
+formato desconhecido) — e quem pede aplica a regra (só `peso` com `kg > 0`
+vale; `zero`/`negativo` = prato vazio). No `auto` cada protocolo tem o prazo
+inteiro, como no PDV offline: uma balança muda leva até 5 × `timeout_ms`.
+
+Erros saem como `{"erro", "mensagem", "detail"}`: `403 origem_recusada`,
+`409 balanca_desligada|sem_porta|ocupada`, `422 requisicao_invalida`,
+`503 porta_em_uso|porta_inexistente|porta_falhou|balanca_sem_resposta|agente_encerrando`,
+`500 interno`.
+
+Na janela de configuração, a aba **Balança de checkout** liga a balança,
+escolhe porta, protocolo, velocidade e tempo, e tem **Detectar** e
+**Testar (10 s)** com o peso ao vivo (sem salvar). O heartbeat leva
+`capabilities.balanca_checkout = {configured, ok, porta, protocolo}`.
+
+Módulos: `agent/balanca/` — `protocolos.py` (interpretação pura),
+`porta.py` (pyserial e erros do Windows), `leitor.py` (thread dona da
+porta), `servico.py` (fachada), `rotas.py`, `erros.py`. Testes sem balança
+usam `tests/fake_balanca.py`.
+
 ### Segurança das rotas locais
 
 Qualquer página aberta no navegador da loja alcança `http://localhost:17777`.
@@ -196,6 +251,8 @@ Qualquer página aberta no navegador da loja alcança `http://localhost:17777`.
   o preflight responde `Access-Control-Allow-Private-Network: true`. Com
   `host` diferente de `127.0.0.1`/`localhost` no config.json, a biometria
   fica desligada.
+- **`/balanca/*`** (v0.7): a mesma política da biometria, com a recusa
+  "Este site não pode usar a balança deste computador.".
 
 Origens aceitas: `https://eldensys.hubdesktop.com.br` e os subdomínios dele.
 `http://localhost:5173` e `http://127.0.0.1:5173` (Vite) só com
@@ -228,7 +285,7 @@ curl http://localhost:17777/printers
 
 | Método | Path             | Descrição                                |
 |--------|------------------|------------------------------------------|
-| GET    | /health          | Status, versão e `recursos` (`impressao`, `canal_remoto`, `biometria`) |
+| GET    | /health          | Status, versão e `recursos` (`impressao`, `canal_remoto`, `biometria`, `balanca_checkout`) |
 | GET    | /printers        | Lista impressoras Windows + default       |
 | GET    | /config          | Lê a configuração (sem pareamento nem chaves da biometria) |
 | POST   | /config          | Log, SumatraPDF e anti-aliasing de etiqueta — só origens da [política](#segurança-das-rotas-locais) |
@@ -237,6 +294,7 @@ curl http://localhost:17777/printers
 | POST   | /print/pdf       | Imprime PDF (base64) via SumatraPDF       |
 | POST   | /print/test      | Página de teste (escpos ou pdf)           |
 | *      | /biometria/*     | Leitor biométrico — ver [Leitor biométrico](#leitor-biométrico-v06) |
+| *      | /balanca/*       | Balança de checkout — ver [Balança de checkout](#balança-de-checkout-v07) |
 
 ### Exemplo de payload ESC/POS
 
@@ -295,7 +353,14 @@ Arquivo: `%APPDATA%\EldenSysAgent\config.json`
   "biometria_origens_extras": [],
   "biometria_habilitada": true,
   "biometria_previa": true,
-  "biometria_ocioso_s": 20.0
+  "biometria_ocioso_s": 20.0,
+
+  "balanca_habilitada": false,
+  "balanca_porta": "",
+  "balanca_baud": 9600,
+  "balanca_protocolo": "auto",
+  "balanca_timeout_ms": 1500,
+  "balanca_ocioso_s": 5.0
 }
 ```
 
@@ -317,11 +382,25 @@ Arquivo: `%APPDATA%\EldenSysAgent\config.json`
 Nenhuma chave da biometria aparece no `GET /config` nem é aceita pelo
 `POST /config`: só a janela (prévia) e o config.json mudam esses valores.
 
+| Chave (balança de checkout, v0.7) | O que é |
+|---|---|
+| `balanca_habilitada` | Liga a balança neste PC para o PDV online. Desligada (padrão), as leituras respondem `409 balanca_desligada` e a porta nunca é aberta. |
+| `balanca_porta` | Porta COM da balança (`"COM3"`). Vazio = nenhuma. |
+| `balanca_baud` | 2400, 4800, 9600, 19200 ou 38400 (sempre 8N1, sem fluxo). |
+| `balanca_protocolo` | `auto`, `urano`, `toledo`, `filizola`, `elgin` ou `generico`. |
+| `balanca_timeout_ms` | Prazo de uma leitura quando a web não manda o seu (200–10000 ms). |
+| `balanca_ocioso_s` | Segundos com a porta aberta depois da última leitura (só no config.json). |
+
+Valor inválido nessas chaves (config.json editado à mão) vale como o padrão.
+Elas também não passam pelo `GET`/`POST /config`: a web usa
+`POST /balanca/config` (com a política de origem) e a janela grava direto.
+
 **Forma recomendada**: clique duplo no ícone da bandeja (ou clique
 direito → **"Configurações..."**) — abre uma janela com as abas
 **Geral** (log, SumatraPDF), **Loja** (pareamento, pasta da balança,
-impressora de etiquetas remotas) e **Leitor biométrico** (estado, testar,
-sincronizar, prévia), sem editar JSON.
+impressora de etiquetas remotas), **Leitor biométrico** (estado, testar,
+sincronizar, prévia) e **Balança de checkout** (porta, protocolo, detectar,
+testar), sem editar JSON.
 
 A pasta da balança, a impressora de etiquetas e o pareamento valem
 imediatamente, sem reiniciar o agente.

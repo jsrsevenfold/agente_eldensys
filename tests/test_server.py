@@ -39,9 +39,10 @@ def test_health_reporta_versao(client):
 
 
 def test_health_lista_os_recursos(client):
-    """A web decide o que oferecer (ex.: biometria só com agente >= 0.6.0)."""
+    """A web decide o que oferecer (ex.: biometria só com agente >= 0.6.0,
+    balança de checkout só com >= 0.7.0)."""
     corpo = client.get("/health").json()
-    assert corpo["recursos"] == ["impressao", "canal_remoto", "biometria"]
+    assert corpo["recursos"] == ["impressao", "canal_remoto", "biometria", "balanca_checkout"]
     assert corpo["status"] == "ok"
 
 
@@ -279,6 +280,12 @@ def test_inventario_de_rotas(client):
         ("POST", "/biometria/cadastro/{sessao_id}/descartar"),
         ("POST", "/biometria/cancelar"),
         ("POST", "/biometria/sincronizar"),
+        ("GET", "/balanca/status"),
+        ("GET", "/balanca/portas"),
+        ("POST", "/balanca/config"),
+        ("POST", "/balanca/leitura"),
+        ("POST", "/balanca/detectar"),
+        ("POST", "/balanca/liberar"),
     }
 
 
@@ -288,6 +295,17 @@ def test_get_config_nao_expoe_as_chaves_da_biometria(client, monkeypatch):
     )
     corpo = client.get("/config").json()
     assert not any(k.startswith("biometria") for k in corpo)
+
+
+def test_config_geral_nao_le_nem_grava_a_balanca(client, monkeypatch):
+    """A balança se configura só por /balanca/config (com a política de origem)."""
+    salvos: list[AgentConfig] = []
+    monkeypatch.setattr(server, "load_config", lambda: AgentConfig(balanca_porta="COM3"))
+    monkeypatch.setattr(server, "save_config", salvos.append)
+    assert not any(k.startswith("balanca") for k in client.get("/config").json())
+    r = client.post("/config", json={"balanca_habilitada": True, "balanca_porta": "COM9"})
+    assert r.status_code == 200
+    assert (salvos[-1].balanca_habilitada, salvos[-1].balanca_porta) == (False, "COM3")
 
 
 # ── biometria no app de verdade (create_app) ─────────────────────────────
@@ -335,14 +353,63 @@ def test_biometria_no_app_exige_a_origem_da_retaguarda(client_bio, jobs):
     assert r.headers["access-control-allow-origin"] == "*"
 
 
+class _BalancaQueAnota:
+    def __init__(self):
+        self.chamadas: list[str] = []
+
+    def status(self):
+        self.chamadas.append("status")
+        return {"versao_agente": __version__}
+
+    def liberar(self):
+        self.chamadas.append("liberar")
+        return {"liberada": True}
+
+
+def test_balanca_no_app_tem_a_mesma_politica_da_biometria(monkeypatch, tmp_path, jobs):
+    monkeypatch.setattr(server, "ensure_label_appdata", lambda: tmp_path)
+    monkeypatch.setattr(server, "load_config", lambda: AgentConfig())
+    bal = _BalancaQueAnota()
+    app = server.create_app(AgentConfig(), biometria=_ServicoQueAnota(), balanca=bal)
+    c = TestClient(app, base_url="http://localhost:17777")
+    prod = "https://eldensys.hubdesktop.com.br"
+    r = c.post("/balanca/liberar", headers={"Origin": "https://site-malicioso.example"})
+    assert r.status_code == 403
+    assert r.json()["mensagem"] == "Este site não pode usar a balança deste computador."
+    assert c.post("/balanca/liberar").status_code == 403  # POST sem Origin
+    assert c.get("/balanca/status", headers={"Host": "evil.example:17777"}).status_code == 403
+    r = c.post("/balanca/liberar", headers={"Origin": prod})
+    assert (r.status_code, r.json()) == (200, {"liberada": True})
+    assert r.headers["access-control-allow-origin"] == prod
+    assert bal.chamadas == ["liberar"]
+    r = c.post(
+        "/balanca/leitura",
+        content=b"{ quebrado",
+        headers={"Origin": prod, "Content-Type": "application/json"},
+    )
+    assert (r.status_code, r.json()["mensagem"]) == (422, "Pedido inválido para a balança.")
+    # A impressão continua com o CORS `*`.
+    r = c.post(
+        "/print/pdf",
+        json={"printer": "X", "pdf_base64": PDF},
+        headers={"Origin": "https://qualquer.example"},
+    )
+    assert r.headers["access-control-allow-origin"] == "*"
+
+
 def test_create_app_sem_servico_nao_abre_o_leitor(monkeypatch, tmp_path):
-    """O serviço padrão é preguiçoso: nenhuma thread, DLL ou leitor no startup."""
+    """Os serviços padrão são preguiçosos: nenhuma thread, DLL, leitor ou porta
+    COM no startup."""
     import threading
 
     monkeypatch.setattr(server, "ensure_label_appdata", lambda: tmp_path)
 
     def nomes() -> set:
-        return {t.ident for t in threading.enumerate() if t.name.startswith("biometria")}
+        return {
+            t.ident
+            for t in threading.enumerate()
+            if t.name.startswith(("biometria", "balanca"))
+        }
 
     antes = nomes()
     c = TestClient(server.create_app(AgentConfig()))
